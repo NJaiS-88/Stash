@@ -31,36 +31,71 @@ const Register = () => {
     }
 
     if (loading) {
-        return <div>Loading...</div>
+        return <div className="loading-screen">Loading...</div>
     }
 
     return (
-        <div>
+        <div className="page-container">
             <Navbar />
-            <h1>Register</h1>
-            {errorMessage && <p style={{ color: 'red' }}>{errorMessage}</p>}
-            <form onSubmit={handleSubmit}>
-                <input 
-                    type="text" 
-                    placeholder="Name" 
-                    value={name} 
-                    onChange={(e) => setName(e.target.value)} 
-                />
-                <input 
-                    type="email" 
-                    placeholder="Email" 
-                    value={email} 
-                    onChange={(e) => setEmail(e.target.value)} 
-                />
-                <input 
-                    type="password" 
-                    placeholder="Password" 
-                    value={password} 
-                    onChange={(e) => setPassword(e.target.value)} 
-                />
-                <button type="submit">Register</button>
-            </form>
-            <p>Already have an account? <Link to="/login">Login</Link></p>
+            <main className="auth-wrapper">
+                <div className="auth-card">
+                    <div className="auth-header">
+                        <h1 className="auth-title">Create an account</h1>
+                        <p className="auth-subtitle">Start your job prep journey with Ascend</p>
+                    </div>
+
+                    {errorMessage && (
+                        <div className="alert-error">
+                            <span>⚠</span>
+                            <span>{errorMessage}</span>
+                        </div>
+                    )}
+
+                    <form onSubmit={handleSubmit} className="auth-form">
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="register-name">Full Name</label>
+                            <input 
+                                id="register-name"
+                                className="form-input"
+                                type="text" 
+                                placeholder="Jane Doe" 
+                                value={name} 
+                                onChange={(e) => setName(e.target.value)} 
+                                required
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="register-email">Email</label>
+                            <input 
+                                id="register-email"
+                                className="form-input"
+                                type="email" 
+                                placeholder="name@example.com" 
+                                value={email} 
+                                onChange={(e) => setEmail(e.target.value)} 
+                                required
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="register-password">Password</label>
+                            <input 
+                                id="register-password"
+                                className="form-input"
+                                type="password" 
+                                placeholder="••••••••" 
+                                value={password} 
+                                onChange={(e) => setPassword(e.target.value)} 
+                                required
+                            />
+                        </div>
+                        <button type="submit" className="auth-btn">Create Account</button>
+                    </form>
+
+                    <p className="auth-footer">
+                        Already have an account? <Link to="/login">Sign in</Link>
+                    </p>
+                </div>
+            </main>
         </div>
     )
 }

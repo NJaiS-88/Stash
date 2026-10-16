@@ -1,12 +1,41 @@
-import { Link } from 'react-router'
+import { Link, useNavigate } from 'react-router'
+import { useAuth } from '../hooks/useAuth'
 
 export default function Navbar() {
+    const { user, handleLogout } = useAuth()
+    const navigate = useNavigate()
+
+    const onLogout = async () => {
+        try {
+            await handleLogout()
+            navigate('/login')
+        } catch (error) {
+            console.error(error)
+        }
+    }
+
     return (
-        <div className="nav">
-            <h1>Navbar</h1>
-            <Link to="/">Home</Link>
-            <Link to="/login">Login</Link>
-            <Link to="/register">Register</Link>
-        </div>
+        <header className="navbar-wrapper">
+            <div className="navbar">
+                <Link to="/" className="navbar-brand">
+                    <span>Ascend</span>
+                    <span className="navbar-badge">AI</span>
+                </Link>
+                <nav className="navbar-links">
+                    <Link to="/" className="nav-link">Home</Link>
+                    {user ? (
+                        <>
+                            <Link to="/dashboard" className="nav-link">Dashboard</Link>
+                            <button onClick={onLogout} className="btn-logout">Logout</button>
+                        </>
+                    ) : (
+                        <>
+                            <Link to="/login" className="nav-link">Login</Link>
+                            <Link to="/register" className="btn-nav-primary">Register</Link>
+                        </>
+                    )}
+                </nav>
+            </div>
+        </header>
     )
 }

@@ -31,30 +31,59 @@ const Login = () => {
     }
 
     if (loading) {
-        return <div>Loading...</div>
+        return <div className="loading-screen">Loading...</div>
     }
 
     return (
-        <div>
+        <div className="page-container">
             <Navbar />
-            <h1>Login</h1>
-            {errorMessage && <p style={{ color: 'red' }}>{errorMessage}</p>}
-            <form onSubmit={handleSubmit}>
-                <input 
-                    type="email" 
-                    placeholder="Email" 
-                    value={email} 
-                    onChange={(e) => setEmail(e.target.value)} 
-                />
-                <input 
-                    type="password" 
-                    placeholder="Password" 
-                    value={password} 
-                    onChange={(e) => setPassword(e.target.value)} 
-                />
-                <button type="submit">Login</button>
-            </form>
-            <p>Don't have an account? <Link to="/register">Register</Link></p>
+            <main className="auth-wrapper">
+                <div className="auth-card">
+                    <div className="auth-header">
+                        <h1 className="auth-title">Welcome back</h1>
+                        <p className="auth-subtitle">Sign in to your Ascend account</p>
+                    </div>
+
+                    {errorMessage && (
+                        <div className="alert-error">
+                            <span>⚠</span>
+                            <span>{errorMessage}</span>
+                        </div>
+                    )}
+
+                    <form onSubmit={handleSubmit} className="auth-form">
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="login-email">Email</label>
+                            <input 
+                                id="login-email"
+                                className="form-input"
+                                type="email" 
+                                placeholder="name@example.com" 
+                                value={email} 
+                                onChange={(e) => setEmail(e.target.value)} 
+                                required
+                            />
+                        </div>
+                        <div className="form-group">
+                            <label className="form-label" htmlFor="login-password">Password</label>
+                            <input 
+                                id="login-password"
+                                className="form-input"
+                                type="password" 
+                                placeholder="••••••••" 
+                                value={password} 
+                                onChange={(e) => setPassword(e.target.value)} 
+                                required
+                            />
+                        </div>
+                        <button type="submit" className="auth-btn">Sign In</button>
+                    </form>
+
+                    <p className="auth-footer">
+                        Don't have an account? <Link to="/register">Create an account</Link>
+                    </p>
+                </div>
+            </main>
         </div>
     )
 }
