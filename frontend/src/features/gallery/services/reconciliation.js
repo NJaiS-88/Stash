@@ -100,6 +100,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 : (contentHash ? await computeFingerprint(contentHash) : null);
 
             results.push({
+                ...existing,
                 imageId: existing.imageId,
                 folderId,
                 relativePath: disc.path,
@@ -109,6 +110,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 contentHash,
                 fingerprint,
                 status: "available",
+                missingSince: null,
                 indexingStatus: isIdentical ? (existing.indexingStatus || "pending") : "pending"
             });
         }
@@ -153,6 +155,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
             const fingerprint = existing.fingerprint || (finalHash ? await computeFingerprint(finalHash) : null);
 
             results.push({
+                ...existing,
                 imageId: existing.imageId,
                 folderId,
                 relativePath: disc.path,
@@ -162,6 +165,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 contentHash: finalHash,
                 fingerprint,
                 status: "available",
+                missingSince: null,
                 indexingStatus: existing.indexingStatus || "pending"
             });
         } else {
@@ -273,10 +277,12 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 unchanged.push(existing);
             } else if (isIdentical && existing.status === 'missing') {
                 // SCENARIO E — RESTORED: Previously missing image reappeared at its original location!
+                // Zero AI re-computation: all caption, keywords, embedding and indexingStatus preserved
                 restored.push({
                     ...existing,
                     status: "available",
-                    missingSince: null
+                    missingSince: null,
+                    indexingStatus: existing.indexingStatus || "pending"
                 });
             } else {
                 // MODIFIED: Same location, but file contents or timestamp changed
@@ -339,7 +345,9 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
             const fingerprint = match.fingerprint || (finalHash ? await computeFingerprint(finalHash) : null);
             const wasMissing = match.status === 'missing';
 
+            // Phase 11: Preserve all AI semantic metadata (...match) & keep indexingStatus
             const updatedRecord = {
+                ...match,
                 imageId: match.imageId, // Permanent imageId survives!
                 folderId: item.folderId, // May have moved to another connected folder
                 relativePath: item.relativePath,

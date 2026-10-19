@@ -95,8 +95,9 @@ export const useGallery = () => {
 
             await saveFolder(folderItem);
 
-            // Phase 2: Build local Image Registry records and save to IndexedDB
-            const imageRecords = await buildImageRegistryForFolder(flattened, folderItem.id);
+            // Phase 2 & 11: Reconcile against all existing records so newly connected folders immediately restore missing images!
+            const allExisting = await getAllImages();
+            const imageRecords = await buildImageRegistryForFolder(flattened, folderItem.id, allExisting);
             await saveImageRecords(imageRecords);
 
             setFolders(prev => {
@@ -141,9 +142,11 @@ export const useGallery = () => {
             const enumerated = await enumerateDirectory(folder.handle);
             const flattened = flattenFiles(enumerated);
 
-            // Phase 2: Load existing image records and reconcile any new/changed files
-            const existingRecords = await getImagesByFolder(folder.id);
-            const imageRecords = await buildImageRegistryForFolder(flattened, folder.id, existingRecords);
+            // Phase 2 & 11: Load folder records and cross-folder missing records to detect restorations
+            const folderRecords = await getImagesByFolder(folder.id);
+            const missingRecords = await getMissingImages();
+            const existingToMatch = [...folderRecords, ...missingRecords.filter(m => m.folderId !== folder.id)];
+            const imageRecords = await buildImageRegistryForFolder(flattened, folder.id, existingToMatch);
             await saveImageRecords(imageRecords);
 
             setActiveFolder({
@@ -240,8 +243,10 @@ export const useGallery = () => {
                     if (perm === 'granted') {
                         const enumerated = await enumerateDirectory(first.handle);
                         const flattened = flattenFiles(enumerated);
-                        const existingRecords = await getImagesByFolder(first.id);
-                        const imageRecords = await buildImageRegistryForFolder(flattened, first.id, existingRecords);
+                        const folderRecords = await getImagesByFolder(first.id);
+                        const missingRecords = await getMissingImages();
+                        const existingToMatch = [...folderRecords, ...missingRecords.filter(m => m.folderId !== first.id)];
+                        const imageRecords = await buildImageRegistryForFolder(flattened, first.id, existingToMatch);
                         await saveImageRecords(imageRecords);
 
                         setActiveFolder({
