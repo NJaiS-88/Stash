@@ -154,16 +154,20 @@ export const useGallery = () => {
             // 1. Scan ALL folders into a single unified global snapshot
             const globalSnapshot = await scanAllFolders(currentFolders);
 
-            // 2. Reconcile across all folders (handles renames & cross-folder moves)
+            // 2. Reconcile across all folders (Scenario A, B, C, D)
             const allExisting = await getAllImages();
-            const reconciledRecords = await reconcileGlobalSnapshot(globalSnapshot, allExisting);
+            const { allRecords, toUpsert, summary } = await reconcileGlobalSnapshot(globalSnapshot, allExisting);
 
-            // 3. Persist reconciled metadata in IndexedDB
-            await saveImageRecords(reconciledRecords);
+            // 3. Persist ONLY toUpsert into IndexedDB (unchanged records skip DB writes)
+            if (toUpsert && toUpsert.length > 0) {
+                await saveImageRecords(toUpsert);
+            }
 
             return {
                 snapshot: globalSnapshot,
-                records: reconciledRecords
+                records: allRecords,
+                toUpsert,
+                summary
             };
         } catch (err) {
             console.error('Error during global multi-folder scan:', err);

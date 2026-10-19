@@ -32,8 +32,19 @@ const Dashboard = () => {
         setScanning(true);
         setScanMessage(null);
         try {
-            const { snapshot } = await scanAll();
-            setScanMessage(`Global scan complete: Discovered ${snapshot.length} photos across ${folders.length} folder${folders.length === 1 ? '' : 's'}.`);
+            const { snapshot, summary } = await scanAll();
+            const details = [];
+            if (summary) {
+                if (summary.unchanged > 0) details.push(`${summary.unchanged} unchanged`);
+                if (summary.renamed > 0) details.push(`${summary.renamed} renamed`);
+                if (summary.movedBetweenFolders > 0) details.push(`${summary.movedBetweenFolders} moved across folders`);
+                if (summary.movedWithinFolder > 0) details.push(`${summary.movedWithinFolder} moved`);
+                if (summary.created > 0) details.push(`${summary.created} new`);
+                if (summary.modified > 0) details.push(`${summary.modified} modified`);
+                if (summary.missing > 0) details.push(`${summary.missing} missing`);
+            }
+            const detailStr = details.length > 0 ? ` (${details.join(', ')})` : '';
+            setScanMessage(`Reconciliation complete: Discovered ${snapshot.length} photos across ${folders.length} folder${folders.length === 1 ? '' : 's'}${detailStr}.`);
         } catch (err) {
             console.error('Scan error:', err);
         } finally {

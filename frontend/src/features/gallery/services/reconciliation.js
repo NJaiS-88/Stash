@@ -43,16 +43,8 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
 }
 
 /**
- * Builds and reconciles image registry records for all image files in a folder.
+ * Builds and reconciles image registry records for all image files in a single folder.
  * Preserves permanent imageId even across renames or moves.
- *
- * Algorithm:
- * 1. Pass 1 - Fast Change Detection: 4-tuple match (folderId, path, size, lastModified)
- *    skips hashing for unchanged files.
- * 2. Pass 2 - Rename / Move Detection: Matches unmatched files by identical
- *    (size + lastModified) or contentHash, preserving imageId and updating path.
- * 3. Pass 3 - New Images: Assigns a newly minted crypto.randomUUID().
- * 4. Pass 4 - Missing Images: Preserves missing records with status: 'missing'.
  *
  * @param {Array} flatFiles
  * @param {string} folderId
@@ -93,10 +85,8 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
 
             const isIdentical = disc.size === existing.size && disc.lastModified === existing.lastModified;
 
-            // Phase 6: UNCHANGED ➔ DO NOT read bytes or compute hash. Reuse existing hash and status!
             let contentHash = existing.contentHash;
             if (!isIdentical) {
-                // Size or lastModified changed: recompute hash for this specific modified file
                 try {
                     const file = await disc.fileItem.handle.getFile();
                     contentHash = await computeFileHash(file);
@@ -110,7 +100,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 : (contentHash ? await computeFingerprint(contentHash) : null);
 
             results.push({
-                imageId: existing.imageId, // Stable identity preserved
+                imageId: existing.imageId,
                 folderId,
                 relativePath: disc.path,
                 fileName: disc.name,
@@ -124,14 +114,12 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
         }
     }
 
-    // Unmatched existing pool for Pass 2
+    // Unmatched pool for Pass 2 (Rename / Move detection)
     const remainingExisting = existingRecords.filter(r => !matchedExistingIds.has(r.imageId));
 
-    // Pass 2: Rename / Move Detection (via cheap size+lastModified first, then SHA-256 only if needed)
     for (const disc of discoveredFiles) {
         if (matchedDiscoveredPaths.has(disc.path)) continue;
 
-        // Try cheap metadata match first
         let renameMatchIndex = remainingExisting.findIndex(r =>
             !matchedExistingIds.has(r.imageId) &&
             r.size === disc.size &&
@@ -139,7 +127,6 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
         );
 
         let discHash = null;
-        // If not matched by metadata, hash this candidate to check against existing contentHashes
         if (renameMatchIndex === -1) {
             try {
                 const file = await disc.fileItem.handle.getFile();
@@ -166,10 +153,10 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
             const fingerprint = existing.fingerprint || (finalHash ? await computeFingerprint(finalHash) : null);
 
             results.push({
-                imageId: existing.imageId, // Permanent imageId survives rename/relocation!
+                imageId: existing.imageId,
                 folderId,
-                relativePath: disc.path,    // Updated location
-                fileName: disc.name,        // Updated filename
+                relativePath: disc.path,
+                fileName: disc.name,
                 size: disc.size,
                 lastModified: disc.lastModified,
                 contentHash: finalHash,
@@ -178,12 +165,11 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 indexingStatus: existing.indexingStatus || "pending"
             });
         } else {
-            // Unmatched file becomes a Pass 3 candidate with its computed hash
             disc._computedHash = discHash;
         }
     }
 
-    // Pass 3: Brand new images (assign stable UUID and store computed SHA-256 hash & HMAC fingerprint)
+    // Pass 3: Brand new images
     for (const disc of discoveredFiles) {
         if (matchedDiscoveredPaths.has(disc.path)) continue;
 
@@ -200,7 +186,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
         const fingerprint = hash ? await computeFingerprint(hash) : null;
 
         results.push({
-            imageId: crypto.randomUUID(), // New stable identity
+            imageId: crypto.randomUUID(),
             folderId,
             relativePath: disc.path,
             fileName: disc.name,
@@ -213,7 +199,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
         });
     }
 
-    // Pass 4: Existing records no longer found on disk (mark missing, keep imageId)
+    // Pass 4: Missing images
     for (const existing of remainingExisting) {
         if (!matchedExistingIds.has(existing.imageId)) {
             results.push({
@@ -227,19 +213,34 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
 }
 
 /**
- * Phase 4, 5 & 6: Fast Change Detection & Global Multi-Folder Reconciliation.
- * Compares 4-tuple: (folderId, relativePath, size, lastModified).
- * If unchanged: ZERO hashing, ZERO byte reading, instantly reuses existing hash & status.
- * Hashes only when a file is new, modified, or a potential cross-folder move.
+ * Phase 8: Formal Reconciliation Engine.
+ * Compares current filesystem snapshot against previous IndexedDB state.
+ *
+ * Scenarios handled:
+ * - Scenario A: UNCHANGED (same folderId, relativePath, size, lastModified) ➔ Zero DB write
+ * - Scenario B: RENAMED (same folderId, new fileName, same hash) ➔ Keeps imageId, updates name
+ * - Scenario C: MOVED WITHIN FOLDER (same folderId, new relativePath, same hash) ➔ Keeps imageId, updates path
+ * - Scenario D: MOVED BETWEEN ATTACHED FOLDERS (new folderId, new relativePath, same hash) ➔ Keeps imageId, updates folderId
+ * - MODIFIED: Same location, altered size/lastModified ➔ Rehashes & marks pending
+ * - NEW: Newly added file ➔ Mints permanent imageId
+ * - MISSING: Record not found on disk ➔ Marks status: "missing"
  *
  * @param {Array<Object>} globalSnapshot - Output from scanAllFolders
- * @param {Array<Object>} allExistingRecords - All records from the images store
- * @returns {Promise<Array<Object>>} Reconciled records to save in IndexedDB
+ * @param {Array<Object>} allExistingRecords - All records from IndexedDB images store
+ * @returns {Promise<{ allRecords: Array, toUpsert: Array, summary: Object }>}
  */
 export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords = []) {
     const matchedExistingIds = new Set();
-    const matchedSnapshotKeys = new Set();
-    const results = [];
+    const matchedSnapshotIndices = new Set();
+
+    // Classification buckets
+    const unchanged = [];
+    const modified = [];
+    const renamed = [];
+    const movedWithinFolder = [];
+    const movedBetweenFolders = [];
+    const created = [];
+    const missing = [];
 
     const getCompoundKey = (folderId, path) => `${folderId}:::${path}`;
 
@@ -247,64 +248,69 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
         allExistingRecords.map(r => [getCompoundKey(r.folderId, r.relativePath), r])
     );
 
-    // Pass 1: Fast Change Detection — 4-tuple match (folderId, relativePath, size, lastModified)
-    for (const item of globalSnapshot) {
+    // =========================================================================
+    // PASS 1: Exact Location Match (Scenario A: Unchanged OR Modified)
+    // =========================================================================
+    for (let i = 0; i < globalSnapshot.length; i++) {
+        const item = globalSnapshot[i];
         const key = getCompoundKey(item.folderId, item.relativePath);
         const existing = existingByCompoundKey.get(key);
 
         if (existing && !matchedExistingIds.has(existing.imageId)) {
             matchedExistingIds.add(existing.imageId);
-            matchedSnapshotKeys.add(key);
+            matchedSnapshotIndices.add(i);
 
             const isIdentical = item.size === existing.size && item.lastModified === existing.lastModified;
 
-            // Phase 6: UNCHANGED ➔ DO NOT read bytes or compute hash. Re-use existing!
-            let contentHash = existing.contentHash;
-            if (!isIdentical) {
-                // Modified file: compute hash only for this specific file
-                contentHash = await computeFileHash(item.file);
+            if (isIdentical && existing.status === 'available') {
+                // SCENARIO A — UNCHANGED
+                // Zero byte read, Zero hashing, Zero DB write needed!
+                unchanged.push(existing);
+            } else {
+                // MODIFIED: Same location, but file contents or timestamp changed
+                const contentHash = await computeFileHash(item.file);
+                const fingerprint = contentHash ? await computeFingerprint(contentHash) : null;
+
+                modified.push({
+                    imageId: existing.imageId, // Keep permanent identity
+                    folderId: item.folderId,
+                    relativePath: item.relativePath,
+                    fileName: item.fileName,
+                    size: item.size,
+                    lastModified: item.lastModified,
+                    contentHash,
+                    fingerprint,
+                    status: "available",
+                    indexingStatus: "pending" // Needs AI re-indexing
+                });
             }
-
-            const fingerprint = (isIdentical && existing.fingerprint)
-                ? existing.fingerprint
-                : (contentHash ? await computeFingerprint(contentHash) : null);
-
-            results.push({
-                imageId: existing.imageId, // Retain stable identity
-                folderId: item.folderId,
-                relativePath: item.relativePath,
-                fileName: item.fileName,
-                size: item.size,
-                lastModified: item.lastModified,
-                contentHash,
-                fingerprint,
-                status: "available",
-                indexingStatus: isIdentical ? (existing.indexingStatus || "pending") : "pending"
-            });
         }
     }
 
-    // Unmatched pool for Pass 2 (Rename / Move / Cross-folder Move detection)
+    // Pool of existing records that were not matched at their previous path
     const remainingExisting = allExistingRecords.filter(r => !matchedExistingIds.has(r.imageId));
 
-    // Pass 2: Rename / Move / Cross-Folder Relocation match (cheap metadata first, hash only if needed)
-    for (const item of globalSnapshot) {
-        const key = getCompoundKey(item.folderId, item.relativePath);
-        if (matchedSnapshotKeys.has(key)) continue;
+    // =========================================================================
+    // PASS 2: Rename & Move Detection (Scenarios B, C, D)
+    // =========================================================================
+    for (let i = 0; i < globalSnapshot.length; i++) {
+        if (matchedSnapshotIndices.has(i)) continue;
+        const item = globalSnapshot[i];
 
-        // Try cheap metadata match first
-        let renameMatch = remainingExisting.find(r =>
+        // 1. Try cheap metadata match first
+        let match = remainingExisting.find(r =>
             !matchedExistingIds.has(r.imageId) &&
             r.size === item.size &&
             r.lastModified === item.lastModified
         );
 
+        // 2. If no cheap stat match, compute hash on this candidate to verify against existing hashes
         let itemHash = item.contentHash;
-        if (!renameMatch) {
+        if (!match) {
             itemHash = await computeFileHash(item.file);
             item.contentHash = itemHash;
             if (itemHash) {
-                renameMatch = remainingExisting.find(r =>
+                match = remainingExisting.find(r =>
                     !matchedExistingIds.has(r.imageId) &&
                     r.contentHash &&
                     r.contentHash === itemHash
@@ -312,16 +318,16 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
             }
         }
 
-        if (renameMatch) {
-            matchedExistingIds.add(renameMatch.imageId);
-            matchedSnapshotKeys.add(key);
+        if (match) {
+            matchedExistingIds.add(match.imageId);
+            matchedSnapshotIndices.add(i);
 
-            const finalHash = itemHash || renameMatch.contentHash;
-            const fingerprint = renameMatch.fingerprint || (finalHash ? await computeFingerprint(finalHash) : null);
+            const finalHash = itemHash || match.contentHash;
+            const fingerprint = match.fingerprint || (finalHash ? await computeFingerprint(finalHash) : null);
 
-            results.push({
-                imageId: renameMatch.imageId, // Permanent imageId survives even cross-folder moves!
-                folderId: item.folderId,       // Updated folderId
+            const updatedRecord = {
+                imageId: match.imageId, // Permanent imageId survives!
+                folderId: item.folderId, // May have moved to another connected folder
                 relativePath: item.relativePath,
                 fileName: item.fileName,
                 size: item.size,
@@ -329,20 +335,34 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 contentHash: finalHash,
                 fingerprint,
                 status: "available",
-                indexingStatus: renameMatch.indexingStatus || "pending"
-            });
+                indexingStatus: match.indexingStatus || "pending"
+            };
+
+            // Classify scenario
+            if (item.folderId !== match.folderId) {
+                // SCENARIO D: Moved between attached folders (e.g. Trips -> Favorites)
+                movedBetweenFolders.push(updatedRecord);
+            } else if (item.fileName !== match.fileName) {
+                // SCENARIO B: Renamed (e.g. beach.jpg -> goa_sunset.jpg)
+                renamed.push(updatedRecord);
+            } else {
+                // SCENARIO C: Moved within folder (e.g. Goa/beach.jpg -> Favorites/beach.jpg)
+                movedWithinFolder.push(updatedRecord);
+            }
         }
     }
 
-    // Pass 3: Brand new images (compute hash & HMAC fingerprint)
-    for (const item of globalSnapshot) {
-        const key = getCompoundKey(item.folderId, item.relativePath);
-        if (matchedSnapshotKeys.has(key)) continue;
+    // =========================================================================
+    // PASS 3: Newly Added Files
+    // =========================================================================
+    for (let i = 0; i < globalSnapshot.length; i++) {
+        if (matchedSnapshotIndices.has(i)) continue;
+        const item = globalSnapshot[i];
 
         const hash = item.contentHash || await computeFileHash(item.file);
         const fingerprint = hash ? await computeFingerprint(hash) : null;
 
-        results.push({
+        created.push({
             imageId: crypto.randomUUID(), // Brand-new identity
             folderId: item.folderId,
             relativePath: item.relativePath,
@@ -356,15 +376,49 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
         });
     }
 
-    // Pass 4: Existing records not found in any connected folder (mark missing)
+    // =========================================================================
+    // PASS 4: Missing Files (Unlocated records)
+    // =========================================================================
     for (const existing of remainingExisting) {
         if (!matchedExistingIds.has(existing.imageId)) {
-            results.push({
+            missing.push({
                 ...existing,
                 status: "missing"
             });
         }
     }
 
-    return results;
+    // Minimal records to write to IndexedDB (excludes unchanged records!)
+    const toUpsert = [
+        ...modified,
+        ...renamed,
+        ...movedWithinFolder,
+        ...movedBetweenFolders,
+        ...created,
+        ...missing
+    ];
+
+    // Complete unified list for UI display
+    const allRecords = [
+        ...unchanged,
+        ...toUpsert
+    ];
+
+    const summary = {
+        total: allRecords.length,
+        unchanged: unchanged.length,
+        modified: modified.length,
+        renamed: renamed.length,
+        movedWithinFolder: movedWithinFolder.length,
+        movedBetweenFolders: movedBetweenFolders.length,
+        created: created.length,
+        missing: missing.length,
+        upsertCount: toUpsert.length
+    };
+
+    return {
+        allRecords,
+        toUpsert,
+        summary
+    };
 }
