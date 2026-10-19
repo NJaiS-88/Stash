@@ -161,7 +161,7 @@ export const useGallery = () => {
 
             // 2. Reconcile across all folders (handles renames & cross-folder moves)
             const allExisting = await getAllImages();
-            const reconciledRecords = reconcileGlobalSnapshot(globalSnapshot, allExisting);
+            const reconciledRecords = await reconcileGlobalSnapshot(globalSnapshot, allExisting);
 
             // 3. Persist reconciled metadata in IndexedDB
             await saveImageRecords(reconciledRecords);
