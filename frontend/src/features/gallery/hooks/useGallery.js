@@ -183,9 +183,73 @@ export const useGallery = () => {
     };
 
     /**
-     * Phase 4: Global Multi-Folder Scan
+     * Phase 12: Reconnect an unavailable or moved folder.
+     * Preserves the existing folderId container so all image mappings remain intact!
+     *
+     * @param {string} folderId
+     * @returns {Promise<boolean>}
+     */
+    const reconnectFolder = async (folderId) => {
+        setError(null);
+        setLoading(true);
+        try {
+            const folder = folders.find(f => f.id === folderId);
+            if (!folder) throw new Error('Folder not found');
+
+            // Prompt user to select directory to re-attach or re-authorize
+            const handle = await selectDirectory();
+            if (!handle) {
+                setLoading(false);
+                return false;
+            }
+
+            const enumerated = await enumerateDirectory(handle);
+            const flattened = flattenFiles(enumerated);
+
+            // Re-link new handle to the SAME permanent folderId!
+            const updatedFolder = {
+                ...folder,
+                name: handle.name,
+                handle,
+                status: 'available',
+                error: null,
+                fileCount: flattened.length,
+                reconnectedAt: Date.now()
+            };
+
+            await saveFolder(updatedFolder);
+
+            // Reconcile images against all existing records
+            const allExisting = await getAllImages();
+            const imageRecords = await buildImageRegistryForFolder(flattened, folderId, allExisting);
+            await saveImageRecords(imageRecords);
+
+            setFolders(prev => prev.map(f => f.id === folderId ? updatedFolder : f));
+
+            if (activeFolder?.id === folderId) {
+                setActiveFolder({
+                    ...updatedFolder,
+                    entries: enumerated,
+                    flatFiles: flattened,
+                    imageRecords: imageRecords.filter(r => r.status === 'available')
+                });
+            }
+
+            await refreshMissingImages();
+            return true;
+        } catch (err) {
+            console.error('Error reconnecting folder:', err);
+            setError(err.message || 'Failed to reconnect folder');
+            return false;
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    /**
+     * Phase 4 & Phase 12: Global Multi-Folder Scan
      * Scans ALL connected folders in parallel, aggregates their files into a single snapshot,
-     * reconciles against all existing records in IndexedDB, and persists updates.
+     * reconciles against all existing records in IndexedDB, and synchronizes folder states.
      *
      * @returns {Promise<{ snapshot: Array, records: Array }>}
      */
@@ -200,6 +264,27 @@ export const useGallery = () => {
 
             // 1. Scan ALL folders into a single unified global snapshot
             const globalSnapshot = await scanAllFolders(currentFolders);
+
+            // Phase 12: Synchronize folder updates (renames & availability status)
+            if (globalSnapshot.folderUpdates && globalSnapshot.folderUpdates.length > 0) {
+                const updatedFolders = currentFolders.map(folder => {
+                    const update = globalSnapshot.folderUpdates.find(u => u.folderId === folder.id);
+                    if (update) {
+                        return {
+                            ...folder,
+                            name: update.name || folder.name,
+                            status: update.status || 'available',
+                            error: update.error || null
+                        };
+                    }
+                    return folder;
+                });
+
+                for (const f of updatedFolders) {
+                    await saveFolder(f);
+                }
+                setFolders(updatedFolders);
+            }
 
             // 2. Reconcile across all folders (Scenario A, B, C, D, E)
             const allExisting = await getAllImages();
@@ -277,6 +362,7 @@ export const useGallery = () => {
         selectFolder,
         removeFolder,
         scanAll,
+        reconnectFolder,
         refreshMissingImages,
         deleteMissingPhoto,
         purgeAllMissing

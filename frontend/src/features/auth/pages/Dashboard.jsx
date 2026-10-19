@@ -12,6 +12,7 @@ const Dashboard = () => {
         selectFolder,
         removeFolder,
         scanAll,
+        reconnectFolder,
         missingImages,
         deleteMissingPhoto,
         purgeAllMissing,
@@ -23,6 +24,11 @@ const Dashboard = () => {
     const [showMissingModal, setShowMissingModal] = useState(false);
     const [purging, setPurging] = useState(false);
     const navigate = useNavigate();
+
+    const handleReconnect = async (folderId, e) => {
+        e.stopPropagation();
+        await reconnectFolder(folderId);
+    };
 
     const handleOpenFolder = async (folderId) => {
         await selectFolder(folderId);
@@ -73,6 +79,7 @@ const Dashboard = () => {
                 if (summary.restored > 0) details.push(`${summary.restored} restored`);
                 if (summary.created > 0) details.push(`${summary.created} new`);
                 if (summary.modified > 0) details.push(`${summary.modified} modified`);
+                if (summary.shieldedFromMissing > 0) details.push(`${summary.shieldedFromMissing} shielded (offline folders)`);
                 if (summary.newlyMissing > 0) details.push(`${summary.newlyMissing} newly missing`);
                 else if (summary.missing > 0) details.push(`${summary.missing} missing`);
             }
@@ -242,41 +249,78 @@ const Dashboard = () => {
                     </div>
                 ) : (
                     <div className="dashboard-grid">
-                        {folders.map(folder => (
-                            <div key={folder.id} className="dashboard-card" style={{
-                                display: 'flex',
-                                flexDirection: 'column',
-                                justifyContent: 'space-between'
-                            }}>
-                                <div>
-                                    <div style={{ fontSize: '2rem', marginBottom: '10px' }}>📁</div>
-                                    <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>
-                                        {folder.name}
-                                    </h3>
-                                    <p style={{ color: 'var(--text-secondary)', fontSize: '0.85rem', marginBottom: '16px' }}>
-                                        {folder.fileCount ? `${folder.fileCount} photos detected` : 'Local gallery folder'}
-                                    </p>
-                                </div>
+                        {folders.map(folder => {
+                            const isUnavailable = folder.status === 'unavailable';
+                            return (
+                                <div key={folder.id} className="dashboard-card" style={{
+                                    display: 'flex',
+                                    flexDirection: 'column',
+                                    justifyContent: 'space-between',
+                                    border: isUnavailable ? '1px solid #fde68a' : '1px solid var(--border-color)',
+                                    backgroundColor: isUnavailable ? '#fffdf7' : 'var(--bg-surface)'
+                                }}>
+                                    <div>
+                                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+                                            <div style={{ fontSize: '2rem' }}>{isUnavailable ? '⚠️' : '📁'}</div>
+                                            {isUnavailable && (
+                                                <span style={{
+                                                    fontSize: '0.7rem',
+                                                    fontWeight: 600,
+                                                    backgroundColor: '#fef3c7',
+                                                    color: '#92400e',
+                                                    padding: '2px 8px',
+                                                    borderRadius: '4px',
+                                                    border: '1px solid #fcd34d'
+                                                }}>
+                                                    Unavailable
+                                                </span>
+                                            )}
+                                        </div>
+                                        <h3 style={{ fontSize: '1.1rem', fontWeight: 700, color: 'var(--text-primary)', marginBottom: '4px' }}>
+                                            {folder.name}
+                                        </h3>
+                                        <p style={{
+                                            color: isUnavailable ? '#b45309' : 'var(--text-secondary)',
+                                            fontSize: '0.85rem',
+                                            marginBottom: '16px'
+                                        }}>
+                                            {isUnavailable
+                                                ? (folder.error || 'Drive disconnected or permission needed')
+                                                : (folder.fileCount ? `${folder.fileCount} photos detected` : 'Local gallery folder')}
+                                        </p>
+                                    </div>
 
-                                <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
-                                    <button
-                                        onClick={() => handleOpenFolder(folder.id)}
-                                        className="btn-nav-primary"
-                                        style={{ flex: 1, fontSize: '0.85rem', padding: '8px 12px' }}
-                                    >
-                                        Open Gallery →
-                                    </button>
-                                    <button
-                                        onClick={(e) => handleDisconnect(folder.id, e)}
-                                        className="btn-logout"
-                                        style={{ fontSize: '0.85rem', padding: '8px 12px' }}
-                                        title="Disconnect this folder"
-                                    >
-                                        Disconnect
-                                    </button>
+                                    <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                                        {isUnavailable ? (
+                                            <button
+                                                onClick={(e) => handleReconnect(folder.id, e)}
+                                                className="btn-nav-primary"
+                                                style={{ flex: 1, fontSize: '0.85rem', padding: '8px 12px', backgroundColor: '#d97706', borderColor: '#b45309' }}
+                                                title="Re-link or re-authorize folder"
+                                            >
+                                                🔄 Reconnect
+                                            </button>
+                                        ) : (
+                                            <button
+                                                onClick={() => handleOpenFolder(folder.id)}
+                                                className="btn-nav-primary"
+                                                style={{ flex: 1, fontSize: '0.85rem', padding: '8px 12px' }}
+                                            >
+                                                Open Gallery →
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={(e) => handleDisconnect(folder.id, e)}
+                                            className="btn-logout"
+                                            style={{ fontSize: '0.85rem', padding: '8px 12px' }}
+                                            title="Disconnect this folder"
+                                        >
+                                            Disconnect
+                                        </button>
+                                    </div>
                                 </div>
-                            </div>
-                        ))}
+                            );
+                        })}
                     </div>
                 )}
             </main>

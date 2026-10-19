@@ -204,8 +204,10 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
     }
 
     // Pass 4: Missing images
+    // CRITICAL FIX: Only mark an image as missing if it previously belonged to THIS folder!
+    // Never mark photos from other connected folders as missing during a single folder scan.
     for (const existing of remainingExisting) {
-        if (!matchedExistingIds.has(existing.imageId)) {
+        if (!matchedExistingIds.has(existing.imageId) && existing.folderId === folderId) {
             results.push({
                 ...existing,
                 status: "missing",
@@ -405,9 +407,21 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
 
     // =========================================================================
     // PASS 4: Missing Files (Unlocated records across all connected folders)
+    // Phase 12 Protection: Shield records of unavailable folders (unplugged drives)
+    // from being erroneously marked as missing!
     // =========================================================================
+    const unavailableFolderIds = new Set(globalSnapshot.unavailableFolderIds || []);
+    const shieldedFromMissing = [];
+
     for (const existing of remainingExisting) {
         if (!matchedExistingIds.has(existing.imageId)) {
+            // If the parent folder is unavailable (e.g. drive unplugged, permission needed),
+            // do NOT flag these photos as missing! Their files are safe on the unplugged drive.
+            if (unavailableFolderIds.has(existing.folderId)) {
+                shieldedFromMissing.push(existing);
+                continue;
+            }
+
             const isAlreadyMissing = existing.status === 'missing';
             const missingRecord = {
                 ...existing,
@@ -421,7 +435,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 // Already marked missing previously — skip redundant DB write!
                 alreadyMissing.push(missingRecord);
             } else {
-                // Just went missing in this scan (e.g. moved outside or drive unplugged)
+                // Just went missing in this scan (e.g. moved outside attached folders)
                 newlyMissing.push(missingRecord);
             }
         }
@@ -441,6 +455,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
     // Complete unified list for UI display
     const allRecords = [
         ...unchanged,
+        ...shieldedFromMissing,
         ...alreadyMissing,
         ...toUpsert
     ];
@@ -456,6 +471,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
         missing: missing.length,
         newlyMissing: newlyMissing.length,
         restored: restored.length,
+        shieldedFromMissing: shieldedFromMissing.length,
         upsertCount: toUpsert.length
     };
 
