@@ -35,7 +35,6 @@ export async function selectDirectory() {
         return directoryHandle;
     } catch (err) {
         if (err.name === 'AbortError') {
-            // User cancelled the directory picker dialog
             return null;
         }
         throw err;
@@ -44,16 +43,6 @@ export async function selectDirectory() {
 
 /**
  * Recursively enumerates all files and subdirectories from a directory handle.
- *
- * Example result:
- * [
- *   { kind: 'file', name: 'beach.jpg', path: 'beach.jpg', isImage: true },
- *   { kind: 'file', name: 'college.jpg', path: 'college.jpg', isImage: true },
- *   { kind: 'file', name: 'dog.jpg', path: 'dog.jpg', isImage: true },
- *   { kind: 'directory', name: 'Goa', path: 'Goa', children: [
- *       { kind: 'file', name: 'sunset.jpg', path: 'Goa/sunset.jpg', isImage: true }
- *   ]}
- * ]
  *
  * @param {FileSystemDirectoryHandle} dirHandle
  * @param {string} relativePath
@@ -120,4 +109,59 @@ export function flattenFiles(entries) {
  */
 export async function getFileFromHandle(handle) {
     return await handle.getFile();
+}
+
+/**
+ * Creates a catalog registry record for an image file according to Phase 2 schema.
+ * Extracts size and lastModified for change detection without storing any binary/blob data.
+ *
+ * @param {Object} fileItem
+ * @param {string} folderId
+ * @param {Object|null} existingRecord
+ * @returns {Promise<Object|null>}
+ */
+export async function createImageRecord(fileItem, folderId, existingRecord = null) {
+    try {
+        const file = await fileItem.handle.getFile();
+        return {
+            imageId: existingRecord?.imageId || crypto.randomUUID(),
+            folderId,
+            relativePath: fileItem.path,
+            fileName: fileItem.name,
+            size: file.size,
+            lastModified: file.lastModified,
+            contentHash: existingRecord?.contentHash || null,
+            fingerprint: existingRecord?.fingerprint || null,
+            status: "available",
+            indexingStatus: existingRecord?.indexingStatus || "pending"
+        };
+    } catch (err) {
+        console.warn('Could not read metadata for:', fileItem.name, err);
+        return null;
+    }
+}
+
+/**
+ * Builds the image registry records for all image files in a folder.
+ * Preserves permanent imageId if an image was already registered.
+ *
+ * @param {Array} flatFiles
+ * @param {string} folderId
+ * @param {Array} existingRecords
+ * @returns {Promise<Array>}
+ */
+export async function buildImageRegistryForFolder(flatFiles, folderId, existingRecords = []) {
+    const existingMap = new Map(existingRecords.map(r => [r.relativePath, r]));
+    const records = [];
+
+    for (const fileItem of flatFiles) {
+        if (!fileItem.isImage || !fileItem.handle) continue;
+        const existing = existingMap.get(fileItem.path);
+        const record = await createImageRecord(fileItem, folderId, existing);
+        if (record) {
+            records.push(record);
+        }
+    }
+
+    return records;
 }

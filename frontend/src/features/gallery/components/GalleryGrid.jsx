@@ -33,8 +33,15 @@ function TreeItem({ item, depth = 0 }) {
     );
 }
 
-function ThumbnailCard({ fileItem }) {
+function ThumbnailCard({ fileItem, record }) {
     const [imgUrl, setImgUrl] = useState(null);
+
+    const formatSize = (bytes) => {
+        if (!bytes) return '';
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
+        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    };
 
     useEffect(() => {
         let isMounted = true;
@@ -110,13 +117,40 @@ function ThumbnailCard({ fileItem }) {
                 }}>
                     {fileItem.path}
                 </p>
+                {record && (
+                    <div style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        marginTop: '8px',
+                        paddingTop: '8px',
+                        borderTop: '1px solid #f1f5f9',
+                        fontSize: '0.72rem',
+                        color: 'var(--text-muted)'
+                    }}>
+                        <span>{formatSize(record.size)}</span>
+                        <span style={{
+                            fontSize: '0.68rem',
+                            fontWeight: 600,
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            backgroundColor: record.indexingStatus === 'indexed' ? '#ecfdf5' : '#f8fafc',
+                            color: record.indexingStatus === 'indexed' ? '#059669' : '#64748b',
+                            border: '1px solid #e2e8f0'
+                        }}>
+                            {record.indexingStatus}
+                        </span>
+                    </div>
+                )}
             </div>
         </div>
     );
 }
 
-export default function GalleryGrid({ entries, flatFiles, searchQuery = '' }) {
+export default function GalleryGrid({ entries, flatFiles, imageRecords = [], searchQuery = '' }) {
     const [viewMode, setViewMode] = useState('tree');
+
+    const recordMap = new Map(imageRecords.map(r => [r.relativePath, r]));
 
     const filteredFiles = searchQuery
         ? flatFiles.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()) || f.path.toLowerCase().includes(searchQuery.toLowerCase()))
@@ -190,7 +224,11 @@ export default function GalleryGrid({ entries, flatFiles, searchQuery = '' }) {
                             gap: '16px'
                         }}>
                             {filteredFiles.map((file, idx) => (
-                                <ThumbnailCard key={file.path || idx} fileItem={file} />
+                                <ThumbnailCard
+                                    key={file.path || idx}
+                                    fileItem={file}
+                                    record={recordMap.get(file.path)}
+                                />
                             ))}
                         </div>
                     )}

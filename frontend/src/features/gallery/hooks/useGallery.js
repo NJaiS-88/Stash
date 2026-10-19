@@ -1,7 +1,7 @@
 import { useContext, useEffect } from 'react';
 import GalleryContext from '../gallery.context';
-import { selectDirectory, enumerateDirectory, flattenFiles } from '../services/fileSystem';
-import { saveFolder, getAllFolders, deleteFolder } from '../services/galleryDb';
+import { selectDirectory, enumerateDirectory, flattenFiles, buildImageRegistryForFolder } from '../services/fileSystem';
+import { saveFolder, getAllFolders, deleteFolder, saveImageRecords, getImagesByFolder, deleteImagesByFolder } from '../services/galleryDb';
 
 export const useGallery = () => {
     const context = useContext(GalleryContext);
@@ -45,6 +45,10 @@ export const useGallery = () => {
 
             await saveFolder(folderItem);
 
+            // Phase 2: Build local Image Registry records and save to IndexedDB
+            const imageRecords = await buildImageRegistryForFolder(flattened, folderItem.id);
+            await saveImageRecords(imageRecords);
+
             setFolders(prev => {
                 const existing = prev.filter(f => f.id !== folderItem.id);
                 return [...existing, folderItem];
@@ -53,7 +57,8 @@ export const useGallery = () => {
             const loadedFolder = {
                 ...folderItem,
                 entries: enumerated,
-                flatFiles: flattened
+                flatFiles: flattened,
+                imageRecords
             };
 
             setActiveFolder(loadedFolder);
@@ -85,10 +90,16 @@ export const useGallery = () => {
             const enumerated = await enumerateDirectory(folder.handle);
             const flattened = flattenFiles(enumerated);
 
+            // Phase 2: Load existing image records and reconcile any new/changed files
+            const existingRecords = await getImagesByFolder(folder.id);
+            const imageRecords = await buildImageRegistryForFolder(flattened, folder.id, existingRecords);
+            await saveImageRecords(imageRecords);
+
             setActiveFolder({
                 ...folder,
                 entries: enumerated,
-                flatFiles: flattened
+                flatFiles: flattened,
+                imageRecords
             });
         } catch (err) {
             console.error('Error selecting folder:', err);
@@ -101,6 +112,9 @@ export const useGallery = () => {
     const removeFolder = async (folderId) => {
         try {
             await deleteFolder(folderId);
+            // Phase 2: Clean up image registry records for this folder
+            await deleteImagesByFolder(folderId);
+
             setFolders(prev => prev.filter(f => f.id !== folderId));
             if (activeFolder?.id === folderId) {
                 setActiveFolder(null);
@@ -126,10 +140,15 @@ export const useGallery = () => {
                     if (perm === 'granted') {
                         const enumerated = await enumerateDirectory(first.handle);
                         const flattened = flattenFiles(enumerated);
+                        const existingRecords = await getImagesByFolder(first.id);
+                        const imageRecords = await buildImageRegistryForFolder(flattened, first.id, existingRecords);
+                        await saveImageRecords(imageRecords);
+
                         setActiveFolder({
                             ...first,
                             entries: enumerated,
-                            flatFiles: flattened
+                            flatFiles: flattened,
+                            imageRecords
                         });
                     }
                 }

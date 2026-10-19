@@ -17,18 +17,15 @@ export default function Navbar() {
     return (
         <header className="navbar-wrapper">
             <div className="navbar">
-                <Link to="/" className="navbar-brand">
+                <Link to="/dashboard" className="navbar-brand">
                     <span>Stash</span>
                     <span className="navbar-badge">Gallery</span>
                 </Link>
                 <nav className="navbar-links">
-                    <Link to="/" className="nav-link">Home</Link>
+                    <Link to="/dashboard" className="nav-link">Dashboard</Link>
                     <Link to="/gallery" className="nav-link">Gallery</Link>
                     {user ? (
-                        <>
-                            <Link to="/dashboard" className="nav-link">Dashboard</Link>
-                            <button onClick={onLogout} className="btn-logout">Logout</button>
-                        </>
+                        <button onClick={onLogout} className="btn-logout">Logout</button>
                     ) : (
                         <>
                             <Link to="/login" className="nav-link">Login</Link>

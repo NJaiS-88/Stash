@@ -155,6 +155,7 @@ export default function Gallery() {
                                 <GalleryGrid
                                     entries={activeFolder.entries || []}
                                     flatFiles={activeFolder.flatFiles || []}
+                                    imageRecords={activeFolder.imageRecords || []}
                                     searchQuery={searchQuery}
                                 />
                             </>
