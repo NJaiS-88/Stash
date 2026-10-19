@@ -281,15 +281,50 @@ export async function getAvailableImages() {
 }
 
 /**
- * Permanently deletes all missing image records from IndexedDB if requested by user.
+ * Phase 10: Returns only active available images for a specific folder, isolating missing files.
  *
- * @returns {Promise<number>} Number of purged records
+ * @param {string} folderId
+ * @returns {Promise<Array>}
+ */
+export async function getAvailableImagesByFolder(folderId) {
+    const images = await getImagesByFolder(folderId);
+    return images.filter(img => img.status === 'available');
+}
+
+/**
+ * Phase 10: Permanently deletes a single image record from IndexedDB (DELETED state).
+ * Prepares deleted imageId for cloud tombstone cleanup (MongoDB & Pinecone).
+ *
+ * @param {string} imageId
+ * @returns {Promise<boolean>}
+ */
+export async function deleteImagePermanently(imageId) {
+    if (!imageId) return false;
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readwrite');
+            const req = tx.objectStore(IMAGES_STORE).delete(imageId);
+            req.onsuccess = () => resolve(true);
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error permanently deleting image:', imageId, error);
+        return false;
+    }
+}
+
+/**
+ * Phase 10: Permanently deletes all missing image records from IndexedDB (DELETED state).
+ * Returns array of purged image metadata (imageId, fingerprint) for cloud MongoDB & Pinecone cleanup.
+ *
+ * @returns {Promise<Array<{ imageId: string, fingerprint: string|null, fileName: string }>>}
  */
 export async function purgeMissingImages() {
     try {
         const db = await getDB();
         const missing = await getMissingImages();
-        if (missing.length === 0) return 0;
+        if (missing.length === 0) return [];
 
         return new Promise((resolve, reject) => {
             const tx = db.transaction(IMAGES_STORE, 'readwrite');
@@ -297,11 +332,15 @@ export async function purgeMissingImages() {
             for (const item of missing) {
                 store.delete(item.imageId);
             }
-            tx.oncomplete = () => resolve(missing.length);
+            tx.oncomplete = () => resolve(missing.map(m => ({
+                imageId: m.imageId,
+                fingerprint: m.fingerprint,
+                fileName: m.fileName
+            })));
             tx.onerror = () => reject(tx.error);
         });
     } catch (error) {
         console.error('Error purging missing images:', error);
-        return 0;
+        return [];
     }
 }

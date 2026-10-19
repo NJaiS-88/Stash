@@ -1,4 +1,4 @@
-import { useContext, useEffect } from 'react';
+import { useContext, useEffect, useState } from 'react';
 import GalleryContext from '../gallery.context';
 import { selectDirectory, enumerateDirectory, flattenFiles } from '../services/fileSystem';
 import { buildImageRegistryForFolder, reconcileGlobalSnapshot } from '../services/reconciliation';
@@ -10,7 +10,10 @@ import {
     saveImageRecords,
     getImagesByFolder,
     getAllImages,
-    deleteImagesByFolder
+    deleteImagesByFolder,
+    getMissingImages,
+    deleteImagePermanently,
+    purgeMissingImages
 } from '../services/galleryDb';
 
 export const useGallery = () => {
@@ -29,6 +32,43 @@ export const useGallery = () => {
         error,
         setError
     } = context;
+
+    const [missingImages, setMissingImages] = useState([]);
+
+    const refreshMissingImages = async () => {
+        try {
+            const missing = await getMissingImages();
+            setMissingImages(missing);
+            return missing;
+        } catch (err) {
+            console.error('Error fetching missing images:', err);
+            return [];
+        }
+    };
+
+    const deleteMissingPhoto = async (imageId) => {
+        try {
+            const success = await deleteImagePermanently(imageId);
+            if (success) {
+                setMissingImages(prev => prev.filter(img => img.imageId !== imageId));
+            }
+            return success;
+        } catch (err) {
+            console.error('Error deleting image permanently:', err);
+            return false;
+        }
+    };
+
+    const purgeAllMissing = async () => {
+        try {
+            const purged = await purgeMissingImages();
+            setMissingImages([]);
+            return purged;
+        } catch (err) {
+            console.error('Error purging all missing images:', err);
+            return [];
+        }
+    };
 
     const addFolder = async () => {
         setError(null);
@@ -68,10 +108,11 @@ export const useGallery = () => {
                 ...folderItem,
                 entries: enumerated,
                 flatFiles: flattened,
-                imageRecords
+                imageRecords: imageRecords.filter(r => r.status === 'available')
             };
 
             setActiveFolder(loadedFolder);
+            await refreshMissingImages();
             return loadedFolder;
         } catch (err) {
             console.error('Error adding folder:', err);
@@ -109,8 +150,10 @@ export const useGallery = () => {
                 ...folder,
                 entries: enumerated,
                 flatFiles: flattened,
-                imageRecords
+                imageRecords: imageRecords.filter(r => r.status === 'available')
             });
+
+            await refreshMissingImages();
         } catch (err) {
             console.error('Error selecting folder:', err);
             setError(err.message || 'Failed to open folder');
@@ -129,6 +172,7 @@ export const useGallery = () => {
             if (activeFolder?.id === folderId) {
                 setActiveFolder(null);
             }
+            await refreshMissingImages();
         } catch (err) {
             console.error('Error removing folder:', err);
             setError(err.message || 'Failed to disconnect folder');
@@ -154,14 +198,17 @@ export const useGallery = () => {
             // 1. Scan ALL folders into a single unified global snapshot
             const globalSnapshot = await scanAllFolders(currentFolders);
 
-            // 2. Reconcile across all folders (Scenario A, B, C, D)
+            // 2. Reconcile across all folders (Scenario A, B, C, D, E)
             const allExisting = await getAllImages();
             const { allRecords, toUpsert, summary } = await reconcileGlobalSnapshot(globalSnapshot, allExisting);
 
-            // 3. Persist ONLY toUpsert into IndexedDB (unchanged records skip DB writes)
+            // 3. Persist ONLY toUpsert into IndexedDB (unchanged & already-missing records skip DB writes)
             if (toUpsert && toUpsert.length > 0) {
                 await saveImageRecords(toUpsert);
             }
+
+            const missing = allRecords.filter(r => r.status === 'missing');
+            setMissingImages(missing);
 
             return {
                 snapshot: globalSnapshot,
@@ -201,7 +248,7 @@ export const useGallery = () => {
                             ...first,
                             entries: enumerated,
                             flatFiles: flattened,
-                            imageRecords
+                            imageRecords: imageRecords.filter(r => r.status === 'available')
                         });
                     }
                 }
@@ -211,17 +258,22 @@ export const useGallery = () => {
         };
 
         restoreAllFolders();
+        refreshMissingImages();
     }, []);
 
     return {
         folders,
         activeFolder,
         setActiveFolder,
+        missingImages,
         loading,
         error,
         addFolder,
         selectFolder,
         removeFolder,
-        scanAll
+        scanAll,
+        refreshMissingImages,
+        deleteMissingPhoto,
+        purgeAllMissing
     };
 };
