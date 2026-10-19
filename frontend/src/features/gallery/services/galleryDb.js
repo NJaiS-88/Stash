@@ -1,5 +1,5 @@
 const DB_NAME = 'stash_db';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const FOLDERS_STORE = 'folders';
 const IMAGES_STORE = 'images';
 
@@ -33,6 +33,10 @@ function getDB() {
             // Phase 7: Index on user-specific HMAC fingerprint for cloud reconciliation
             if (!imageStore.indexNames.contains('fingerprint')) {
                 imageStore.createIndex('fingerprint', 'fingerprint', { unique: false });
+            }
+            // Phase 9: Index on status ('available' vs 'missing')
+            if (!imageStore.indexNames.contains('status')) {
+                imageStore.createIndex('status', 'status', { unique: false });
             }
         };
         request.onsuccess = () => resolve(request.result);
@@ -233,5 +237,71 @@ export async function findDuplicateImages() {
     } catch (error) {
         console.error('Error finding duplicate images:', error);
         return [];
+    }
+}
+
+/**
+ * Retrieves all images matching a specific status ('available' or 'missing').
+ *
+ * @param {'available'|'missing'} status
+ * @returns {Promise<Array>}
+ */
+export async function getImagesByStatus(status) {
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readonly');
+            const index = tx.objectStore(IMAGES_STORE).index('status');
+            const req = index.getAll(status);
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error getting images by status:', error);
+        return [];
+    }
+}
+
+/**
+ * Returns all currently missing image records.
+ *
+ * @returns {Promise<Array>}
+ */
+export async function getMissingImages() {
+    return getImagesByStatus('missing');
+}
+
+/**
+ * Returns all currently available image records.
+ *
+ * @returns {Promise<Array>}
+ */
+export async function getAvailableImages() {
+    return getImagesByStatus('available');
+}
+
+/**
+ * Permanently deletes all missing image records from IndexedDB if requested by user.
+ *
+ * @returns {Promise<number>} Number of purged records
+ */
+export async function purgeMissingImages() {
+    try {
+        const db = await getDB();
+        const missing = await getMissingImages();
+        if (missing.length === 0) return 0;
+
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readwrite');
+            const store = tx.objectStore(IMAGES_STORE);
+            for (const item of missing) {
+                store.delete(item.imageId);
+            }
+            tx.oncomplete = () => resolve(missing.length);
+            tx.onerror = () => reject(tx.error);
+        });
+    } catch (error) {
+        console.error('Error purging missing images:', error);
+        return 0;
     }
 }

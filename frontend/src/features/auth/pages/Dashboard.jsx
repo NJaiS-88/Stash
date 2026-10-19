@@ -39,12 +39,18 @@ const Dashboard = () => {
                 if (summary.renamed > 0) details.push(`${summary.renamed} renamed`);
                 if (summary.movedBetweenFolders > 0) details.push(`${summary.movedBetweenFolders} moved across folders`);
                 if (summary.movedWithinFolder > 0) details.push(`${summary.movedWithinFolder} moved`);
+                if (summary.restored > 0) details.push(`${summary.restored} restored`);
                 if (summary.created > 0) details.push(`${summary.created} new`);
                 if (summary.modified > 0) details.push(`${summary.modified} modified`);
-                if (summary.missing > 0) details.push(`${summary.missing} missing`);
+                if (summary.newlyMissing > 0) details.push(`${summary.newlyMissing} newly missing`);
+                else if (summary.missing > 0) details.push(`${summary.missing} missing`);
             }
             const detailStr = details.length > 0 ? ` (${details.join(', ')})` : '';
-            setScanMessage(`Reconciliation complete: Discovered ${snapshot.length} photos across ${folders.length} folder${folders.length === 1 ? '' : 's'}${detailStr}.`);
+            const missingNote = summary?.missing > 0 ? ` [${summary.missing} photos unlocated — preserved safely as missing]` : '';
+            setScanMessage({
+                text: `Reconciliation complete: Discovered ${snapshot.length} photos across ${folders.length} folder${folders.length === 1 ? '' : 's'}${detailStr}.${missingNote}`,
+                hasMissing: (summary?.missing || 0) > 0
+            });
         } catch (err) {
             console.error('Scan error:', err);
         } finally {
@@ -100,9 +106,9 @@ const Dashboard = () => {
 
                 {scanMessage && (
                     <div style={{
-                        backgroundColor: '#ecfdf5',
-                        color: '#065f46',
-                        border: '1px solid #a7f3d0',
+                        backgroundColor: scanMessage.hasMissing ? '#fffbeb' : '#ecfdf5',
+                        color: scanMessage.hasMissing ? '#92400e' : '#065f46',
+                        border: `1px solid ${scanMessage.hasMissing ? '#fde68a' : '#a7f3d0'}`,
                         padding: '12px 18px',
                         borderRadius: 'var(--radius)',
                         marginBottom: '20px',
@@ -111,10 +117,16 @@ const Dashboard = () => {
                         alignItems: 'center',
                         justifyContent: 'space-between'
                     }}>
-                        <span>✓ {scanMessage}</span>
+                        <span>{scanMessage.hasMissing ? 'ℹ️ ' : '✓ '}{scanMessage.text}</span>
                         <button
                             onClick={() => setScanMessage(null)}
-                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#065f46', fontWeight: 'bold' }}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                color: scanMessage.hasMissing ? '#92400e' : '#065f46',
+                                fontWeight: 'bold'
+                            }}
                         >
                             ✕
                         </button>

@@ -204,7 +204,8 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
         if (!matchedExistingIds.has(existing.imageId)) {
             results.push({
                 ...existing,
-                status: "missing"
+                status: "missing",
+                missingSince: existing.missingSince || Date.now()
             });
         }
     }
@@ -213,7 +214,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
 }
 
 /**
- * Phase 8: Formal Reconciliation Engine.
+ * Phase 8 & 9: Formal Reconciliation Engine with Soft Lifecycle & Missing Detection.
  * Compares current filesystem snapshot against previous IndexedDB state.
  *
  * Scenarios handled:
@@ -221,9 +222,10 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
  * - Scenario B: RENAMED (same folderId, new fileName, same hash) ➔ Keeps imageId, updates name
  * - Scenario C: MOVED WITHIN FOLDER (same folderId, new relativePath, same hash) ➔ Keeps imageId, updates path
  * - Scenario D: MOVED BETWEEN ATTACHED FOLDERS (new folderId, new relativePath, same hash) ➔ Keeps imageId, updates folderId
+ * - Scenario E: RESTORED (previously missing image rediscovered) ➔ Restores status: "available", clears missingSince
  * - MODIFIED: Same location, altered size/lastModified ➔ Rehashes & marks pending
  * - NEW: Newly added file ➔ Mints permanent imageId
- * - MISSING: Record not found on disk ➔ Marks status: "missing"
+ * - MISSING: Record not found in ANY attached folder ➔ Marks status: "missing", preserves imageId and metadata
  *
  * @param {Array<Object>} globalSnapshot - Output from scanAllFolders
  * @param {Array<Object>} allExistingRecords - All records from IndexedDB images store
@@ -239,8 +241,11 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
     const renamed = [];
     const movedWithinFolder = [];
     const movedBetweenFolders = [];
+    const restored = [];
     const created = [];
     const missing = [];
+    const newlyMissing = [];
+    const alreadyMissing = [];
 
     const getCompoundKey = (folderId, path) => `${folderId}:::${path}`;
 
@@ -249,7 +254,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
     );
 
     // =========================================================================
-    // PASS 1: Exact Location Match (Scenario A: Unchanged OR Modified)
+    // PASS 1: Exact Location Match (Scenario A: Unchanged, Restored, or Modified)
     // =========================================================================
     for (let i = 0; i < globalSnapshot.length; i++) {
         const item = globalSnapshot[i];
@@ -266,6 +271,13 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 // SCENARIO A — UNCHANGED
                 // Zero byte read, Zero hashing, Zero DB write needed!
                 unchanged.push(existing);
+            } else if (isIdentical && existing.status === 'missing') {
+                // SCENARIO E — RESTORED: Previously missing image reappeared at its original location!
+                restored.push({
+                    ...existing,
+                    status: "available",
+                    missingSince: null
+                });
             } else {
                 // MODIFIED: Same location, but file contents or timestamp changed
                 const contentHash = await computeFileHash(item.file);
@@ -281,6 +293,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                     contentHash,
                     fingerprint,
                     status: "available",
+                    missingSince: null,
                     indexingStatus: "pending" // Needs AI re-indexing
                 });
             }
@@ -291,7 +304,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
     const remainingExisting = allExistingRecords.filter(r => !matchedExistingIds.has(r.imageId));
 
     // =========================================================================
-    // PASS 2: Rename & Move Detection (Scenarios B, C, D)
+    // PASS 2: Rename & Move Detection (Scenarios B, C, D, and Restorations)
     // =========================================================================
     for (let i = 0; i < globalSnapshot.length; i++) {
         if (matchedSnapshotIndices.has(i)) continue;
@@ -324,6 +337,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
 
             const finalHash = itemHash || match.contentHash;
             const fingerprint = match.fingerprint || (finalHash ? await computeFingerprint(finalHash) : null);
+            const wasMissing = match.status === 'missing';
 
             const updatedRecord = {
                 imageId: match.imageId, // Permanent imageId survives!
@@ -335,11 +349,15 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 contentHash: finalHash,
                 fingerprint,
                 status: "available",
+                missingSince: null,
                 indexingStatus: match.indexingStatus || "pending"
             };
 
             // Classify scenario
-            if (item.folderId !== match.folderId) {
+            if (wasMissing) {
+                // SCENARIO E: Previously missing image rediscovered in an attached folder
+                restored.push(updatedRecord);
+            } else if (item.folderId !== match.folderId) {
                 // SCENARIO D: Moved between attached folders (e.g. Trips -> Favorites)
                 movedBetweenFolders.push(updatedRecord);
             } else if (item.fileName !== match.fileName) {
@@ -372,35 +390,50 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
             contentHash: hash,
             fingerprint,
             status: "available",
+            missingSince: null,
             indexingStatus: "pending"
         });
     }
 
     // =========================================================================
-    // PASS 4: Missing Files (Unlocated records)
+    // PASS 4: Missing Files (Unlocated records across all connected folders)
     // =========================================================================
     for (const existing of remainingExisting) {
         if (!matchedExistingIds.has(existing.imageId)) {
-            missing.push({
+            const isAlreadyMissing = existing.status === 'missing';
+            const missingRecord = {
                 ...existing,
-                status: "missing"
-            });
+                status: "missing",
+                missingSince: existing.missingSince || Date.now()
+            };
+
+            missing.push(missingRecord);
+
+            if (isAlreadyMissing) {
+                // Already marked missing previously — skip redundant DB write!
+                alreadyMissing.push(missingRecord);
+            } else {
+                // Just went missing in this scan (e.g. moved outside or drive unplugged)
+                newlyMissing.push(missingRecord);
+            }
         }
     }
 
-    // Minimal records to write to IndexedDB (excludes unchanged records!)
+    // Minimal records to write to IndexedDB (skips unchanged AND already-missing records!)
     const toUpsert = [
         ...modified,
+        ...restored,
         ...renamed,
         ...movedWithinFolder,
         ...movedBetweenFolders,
         ...created,
-        ...missing
+        ...newlyMissing
     ];
 
     // Complete unified list for UI display
     const allRecords = [
         ...unchanged,
+        ...alreadyMissing,
         ...toUpsert
     ];
 
@@ -413,6 +446,8 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
         movedBetweenFolders: movedBetweenFolders.length,
         created: created.length,
         missing: missing.length,
+        newlyMissing: newlyMissing.length,
+        restored: restored.length,
         upsertCount: toUpsert.length
     };
 
