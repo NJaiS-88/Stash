@@ -1,7 +1,7 @@
 import { useContext, useEffect } from 'react';
 import GalleryContext from '../gallery.context';
 import { selectDirectory, enumerateDirectory, flattenFiles } from '../services/fileSystem';
-import { saveDirectoryHandle, getDirectoryHandle, clearDirectoryHandle } from '../services/galleryDb';
+import { saveFolder, getAllFolders, deleteFolder } from '../services/galleryDb';
 
 export const useGallery = () => {
     const context = useContext(GalleryContext);
@@ -10,89 +10,145 @@ export const useGallery = () => {
     }
 
     const {
-        directoryHandle,
-        setDirectoryHandle,
-        folderName,
-        setFolderName,
-        entries,
-        setEntries,
-        flatFiles,
-        setFlatFiles,
+        folders,
+        setFolders,
+        activeFolder,
+        setActiveFolder,
         loading,
         setLoading,
         error,
         setError
     } = context;
 
-    const loadDirectory = async (handle) => {
-        setLoading(true);
+    const addFolder = async () => {
         setError(null);
+        setLoading(true);
         try {
-            console.log(handle);
-            setDirectoryHandle(handle);
-            setFolderName(handle.name);
+            const handle = await selectDirectory();
+            if (!handle) {
+                setLoading(false);
+                return null;
+            }
+
+            console.log('Connected folder handle:', handle);
 
             const enumerated = await enumerateDirectory(handle);
             const flattened = flattenFiles(enumerated);
 
-            setEntries(enumerated);
-            setFlatFiles(flattened);
-            await saveDirectoryHandle(handle);
+            const folderItem = {
+                id: crypto.randomUUID(),
+                name: handle.name,
+                handle,
+                fileCount: flattened.length,
+                addedAt: Date.now()
+            };
+
+            await saveFolder(folderItem);
+
+            setFolders(prev => {
+                const existing = prev.filter(f => f.id !== folderItem.id);
+                return [...existing, folderItem];
+            });
+
+            const loadedFolder = {
+                ...folderItem,
+                entries: enumerated,
+                flatFiles: flattened
+            };
+
+            setActiveFolder(loadedFolder);
+            return loadedFolder;
         } catch (err) {
-            console.error('Failed to enumerate directory:', err);
-            setError(err.message || 'Failed to read folder contents');
+            console.error('Error adding folder:', err);
+            setError(err.message || 'Failed to connect folder');
+            return null;
         } finally {
             setLoading(false);
         }
     };
 
-    const handleConnectFolder = async () => {
+    const selectFolder = async (folderId) => {
         setError(null);
+        setLoading(true);
         try {
-            const handle = await selectDirectory();
-            if (!handle) return;
-            await loadDirectory(handle);
+            const folder = folders.find(f => f.id === folderId);
+            if (!folder) return;
+
+            const permission = await folder.handle.queryPermission({ mode: 'read' });
+            if (permission !== 'granted') {
+                const requestPerm = await folder.handle.requestPermission({ mode: 'read' });
+                if (requestPerm !== 'granted') {
+                    throw new Error('Permission to access folder was denied');
+                }
+            }
+
+            const enumerated = await enumerateDirectory(folder.handle);
+            const flattened = flattenFiles(enumerated);
+
+            setActiveFolder({
+                ...folder,
+                entries: enumerated,
+                flatFiles: flattened
+            });
         } catch (err) {
-            console.error('Error connecting folder:', err);
-            setError(err.message || 'Failed to connect folder');
+            console.error('Error selecting folder:', err);
+            setError(err.message || 'Failed to open folder');
+        } finally {
+            setLoading(false);
         }
     };
 
-    const handleDisconnectFolder = async () => {
-        setDirectoryHandle(null);
-        setFolderName('');
-        setEntries([]);
-        setFlatFiles([]);
-        setError(null);
-        await clearDirectoryHandle();
+    const removeFolder = async (folderId) => {
+        try {
+            await deleteFolder(folderId);
+            setFolders(prev => prev.filter(f => f.id !== folderId));
+            if (activeFolder?.id === folderId) {
+                setActiveFolder(null);
+            }
+        } catch (err) {
+            console.error('Error removing folder:', err);
+            setError(err.message || 'Failed to disconnect folder');
+        }
     };
 
     useEffect(() => {
-        const restoreFolder = async () => {
+        const restoreAllFolders = async () => {
             try {
-                const savedHandle = await getDirectoryHandle();
-                if (!savedHandle) return;
+                const saved = await getAllFolders();
+                if (!saved || saved.length === 0) return;
 
-                const permission = await savedHandle.queryPermission({ mode: 'read' });
-                if (permission === 'granted') {
-                    await loadDirectory(savedHandle);
+                setFolders(saved);
+
+                // Auto-activate the first folder if none active
+                if (!activeFolder && saved.length > 0) {
+                    const first = saved[0];
+                    const perm = await first.handle.queryPermission({ mode: 'read' });
+                    if (perm === 'granted') {
+                        const enumerated = await enumerateDirectory(first.handle);
+                        const flattened = flattenFiles(enumerated);
+                        setActiveFolder({
+                            ...first,
+                            entries: enumerated,
+                            flatFiles: flattened
+                        });
+                    }
                 }
             } catch (err) {
-                console.warn('Could not auto-restore directory handle:', err);
+                console.warn('Could not restore saved folders:', err);
             }
         };
 
-        restoreFolder();
+        restoreAllFolders();
     }, []);
 
     return {
-        directoryHandle,
-        folderName,
-        entries,
-        flatFiles,
+        folders,
+        activeFolder,
+        setActiveFolder,
         loading,
         error,
-        handleConnectFolder,
-        handleDisconnectFolder
+        addFolder,
+        selectFolder,
+        removeFolder
     };
 };

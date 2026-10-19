@@ -18,11 +18,12 @@ export default function Navbar() {
         <header className="navbar-wrapper">
             <div className="navbar">
                 <Link to="/" className="navbar-brand">
-                    <span>Ascend</span>
-                    <span className="navbar-badge">AI</span>
+                    <span>Stash</span>
+                    <span className="navbar-badge">Gallery</span>
                 </Link>
                 <nav className="navbar-links">
                     <Link to="/" className="nav-link">Home</Link>
+                    <Link to="/gallery" className="nav-link">Gallery</Link>
                     {user ? (
                         <>
                             <Link to="/dashboard" className="nav-link">Dashboard</Link>
