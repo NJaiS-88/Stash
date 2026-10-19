@@ -1,7 +1,22 @@
 import { useContext, useEffect } from 'react';
 import GalleryContext from '../gallery.context';
-import { selectDirectory, enumerateDirectory, flattenFiles, buildImageRegistryForFolder } from '../services/fileSystem';
-import { saveFolder, getAllFolders, deleteFolder, saveImageRecords, getImagesByFolder, deleteImagesByFolder } from '../services/galleryDb';
+import {
+    selectDirectory,
+    enumerateDirectory,
+    flattenFiles,
+    buildImageRegistryForFolder,
+    scanAllFolders,
+    reconcileGlobalSnapshot
+} from '../services/fileSystem';
+import {
+    saveFolder,
+    getAllFolders,
+    deleteFolder,
+    saveImageRecords,
+    getImagesByFolder,
+    getAllImages,
+    deleteImagesByFolder
+} from '../services/galleryDb';
 
 export const useGallery = () => {
     const context = useContext(GalleryContext);
@@ -125,6 +140,45 @@ export const useGallery = () => {
         }
     };
 
+    /**
+     * Phase 4: Global Multi-Folder Scan
+     * Scans ALL connected folders in parallel, aggregates their files into a single snapshot,
+     * reconciles against all existing records in IndexedDB, and persists updates.
+     *
+     * @returns {Promise<{ snapshot: Array, records: Array }>}
+     */
+    const scanAll = async () => {
+        setError(null);
+        setLoading(true);
+        try {
+            const currentFolders = folders.length > 0 ? folders : await getAllFolders();
+            if (!currentFolders || currentFolders.length === 0) {
+                return { snapshot: [], records: [] };
+            }
+
+            // 1. Scan ALL folders into a single unified global snapshot
+            const globalSnapshot = await scanAllFolders(currentFolders);
+
+            // 2. Reconcile across all folders (handles renames & cross-folder moves)
+            const allExisting = await getAllImages();
+            const reconciledRecords = reconcileGlobalSnapshot(globalSnapshot, allExisting);
+
+            // 3. Persist reconciled metadata in IndexedDB
+            await saveImageRecords(reconciledRecords);
+
+            return {
+                snapshot: globalSnapshot,
+                records: reconciledRecords
+            };
+        } catch (err) {
+            console.error('Error during global multi-folder scan:', err);
+            setError(err.message || 'Failed to scan all folders');
+            return { snapshot: [], records: [] };
+        } finally {
+            setLoading(false);
+        }
+    };
+
     useEffect(() => {
         const restoreAllFolders = async () => {
             try {
@@ -168,6 +222,7 @@ export const useGallery = () => {
         error,
         addFolder,
         selectFolder,
-        removeFolder
+        removeFolder,
+        scanAll
     };
 };

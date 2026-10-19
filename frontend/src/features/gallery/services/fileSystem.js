@@ -269,3 +269,178 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
 
     return results;
 }
+
+/**
+ * Scans a single connected folder and returns a snapshot of all discovered images.
+ * Extracts ephemeral File objects into RAM for display, hashing, and AI indexing.
+ *
+ * @param {Object} folder - Folder item { id, name, handle }
+ * @returns {Promise<Array<Object>>} Discovered snapshot items
+ */
+export async function scanFolder(folder) {
+    if (!folder?.handle) return [];
+
+    try {
+        const permission = await folder.handle.queryPermission({ mode: 'read' });
+        if (permission !== 'granted') {
+            console.warn(`Permission not granted for folder: ${folder.name} (${folder.id})`);
+            return [];
+        }
+
+        const enumerated = await enumerateDirectory(folder.handle);
+        const flattened = flattenFiles(enumerated);
+
+        const snapshot = [];
+        for (const item of flattened) {
+            if (!item.isImage || !item.handle) continue;
+            try {
+                const file = await item.handle.getFile();
+                snapshot.push({
+                    folderId: folder.id,
+                    folderName: folder.name,
+                    relativePath: item.path,
+                    fileName: item.name,
+                    size: file.size,
+                    lastModified: file.lastModified,
+                    file, // Ephemeral in RAM: used for preview, hashing, AI processing
+                    handle: item.handle
+                });
+            } catch (fileErr) {
+                console.warn(`Could not read file ${item.name}:`, fileErr);
+            }
+        }
+
+        return snapshot;
+    } catch (err) {
+        console.error(`Error scanning folder ${folder.name}:`, err);
+        return [];
+    }
+}
+
+/**
+ * Phase 4: Global Multi-Folder Scanner.
+ * Scans ALL connected folders in parallel and aggregates all discovered images
+ * into a single unified current snapshot.
+ *
+ * @param {Array<Object>} folders - List of connected folder items
+ * @returns {Promise<Array<Object>>} Unified global snapshot
+ */
+export async function scanAllFolders(folders = []) {
+    if (!folders || folders.length === 0) return [];
+
+    const scanPromises = folders.map(folder => scanFolder(folder));
+    const resultsPerFolder = await Promise.all(scanPromises);
+
+    return resultsPerFolder.flat();
+}
+
+/**
+ * Phase 4: Reconciles the global multi-folder snapshot against all existing records in IndexedDB.
+ * Handles renames, moves within a folder, and cross-folder moves seamlessly.
+ *
+ * @param {Array<Object>} globalSnapshot - Output from scanAllFolders
+ * @param {Array<Object>} allExistingRecords - All records from the images store
+ * @returns {Array<Object>} Reconciled records to save in IndexedDB
+ */
+export function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords = []) {
+    const matchedExistingIds = new Set();
+    const matchedSnapshotKeys = new Set();
+    const results = [];
+
+    const getCompoundKey = (folderId, path) => `${folderId}:::${path}`;
+
+    const existingByCompoundKey = new Map(
+        allExistingRecords.map(r => [getCompoundKey(r.folderId, r.relativePath), r])
+    );
+
+    // Pass 1: Exact location match (same folderId + relativePath)
+    for (const item of globalSnapshot) {
+        const key = getCompoundKey(item.folderId, item.relativePath);
+        const existing = existingByCompoundKey.get(key);
+
+        if (existing && !matchedExistingIds.has(existing.imageId)) {
+            matchedExistingIds.add(existing.imageId);
+            matchedSnapshotKeys.add(key);
+
+            const isIdentical = item.size === existing.size && item.lastModified === existing.lastModified;
+
+            results.push({
+                imageId: existing.imageId, // Retain stable identity
+                folderId: item.folderId,
+                relativePath: item.relativePath,
+                fileName: item.fileName,
+                size: item.size,
+                lastModified: item.lastModified,
+                contentHash: isIdentical ? existing.contentHash : null,
+                fingerprint: isIdentical ? existing.fingerprint : null,
+                status: "available",
+                indexingStatus: isIdentical ? (existing.indexingStatus || "pending") : "pending"
+            });
+        }
+    }
+
+    // Unmatched pool for Pass 2 (Rename / Move / Cross-folder Move detection)
+    const remainingExisting = allExistingRecords.filter(r => !matchedExistingIds.has(r.imageId));
+
+    // Pass 2: Rename / Move / Cross-Folder Relocation match (same size + lastModified, or contentHash)
+    for (const item of globalSnapshot) {
+        const key = getCompoundKey(item.folderId, item.relativePath);
+        if (matchedSnapshotKeys.has(key)) continue;
+
+        const renameMatchIndex = remainingExisting.findIndex(r =>
+            !matchedExistingIds.has(r.imageId) &&
+            ((r.contentHash && item.contentHash && r.contentHash === item.contentHash) ||
+             (r.size === item.size && r.lastModified === item.lastModified))
+        );
+
+        if (renameMatchIndex !== -1) {
+            const existing = remainingExisting[renameMatchIndex];
+            matchedExistingIds.add(existing.imageId);
+            matchedSnapshotKeys.add(key);
+
+            results.push({
+                imageId: existing.imageId, // Permanent imageId survives even cross-folder moves!
+                folderId: item.folderId,    // Updated folderId
+                relativePath: item.relativePath,
+                fileName: item.fileName,
+                size: item.size,
+                lastModified: item.lastModified,
+                contentHash: existing.contentHash || null,
+                fingerprint: existing.fingerprint || null,
+                status: "available",
+                indexingStatus: existing.indexingStatus || "pending"
+            });
+        }
+    }
+
+    // Pass 3: Brand new images
+    for (const item of globalSnapshot) {
+        const key = getCompoundKey(item.folderId, item.relativePath);
+        if (matchedSnapshotKeys.has(key)) continue;
+
+        results.push({
+            imageId: crypto.randomUUID(), // Brand-new identity
+            folderId: item.folderId,
+            relativePath: item.relativePath,
+            fileName: item.fileName,
+            size: item.size,
+            lastModified: item.lastModified,
+            contentHash: null,
+            fingerprint: null,
+            status: "available",
+            indexingStatus: "pending"
+        });
+    }
+
+    // Pass 4: Existing records not found in any connected folder (mark missing)
+    for (const existing of remainingExisting) {
+        if (!matchedExistingIds.has(existing.imageId)) {
+            results.push({
+                ...existing,
+                status: "missing"
+            });
+        }
+    }
+
+    return results;
+}
