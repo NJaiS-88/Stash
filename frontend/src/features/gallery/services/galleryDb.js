@@ -1,5 +1,5 @@
 const DB_NAME = 'stash_db';
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const FOLDERS_STORE = 'folders';
 const IMAGES_STORE = 'images';
 
@@ -13,10 +13,22 @@ function getDB() {
                 db.createObjectStore(FOLDERS_STORE);
             }
 
+            let imageStore;
             if (!db.objectStoreNames.contains(IMAGES_STORE)) {
-                const imageStore = db.createObjectStore(IMAGES_STORE, { keyPath: 'imageId' });
+                imageStore = db.createObjectStore(IMAGES_STORE, { keyPath: 'imageId' });
+            } else {
+                imageStore = request.transaction.objectStore(IMAGES_STORE);
+            }
+
+            if (!imageStore.indexNames.contains('folderId')) {
                 imageStore.createIndex('folderId', 'folderId', { unique: false });
+            }
+            if (!imageStore.indexNames.contains('folder_path')) {
                 imageStore.createIndex('folder_path', ['folderId', 'relativePath'], { unique: true });
+            }
+            // Phase 5: Index on SHA-256 contentHash for instant duplicate detection & rename resolution
+            if (!imageStore.indexNames.contains('contentHash')) {
+                imageStore.createIndex('contentHash', 'contentHash', { unique: false });
             }
         };
         request.onsuccess = () => resolve(request.result);
@@ -156,5 +168,66 @@ export async function deleteImagesByFolder(folderId) {
     } catch (error) {
         console.error('Error deleting images for folder:', error);
         return false;
+    }
+}
+
+/**
+ * Retrieves all images matching a specific SHA-256 contentHash.
+ * Useful for finding duplicate copies or verifying renames.
+ *
+ * @param {string} contentHash
+ * @returns {Promise<Array>}
+ */
+export async function getImagesByContentHash(contentHash) {
+    if (!contentHash) return [];
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readonly');
+            const index = tx.objectStore(IMAGES_STORE).index('contentHash');
+            const req = index.getAll(contentHash);
+            req.onsuccess = () => resolve(req.result || []);
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error getting images by contentHash:', error);
+        return [];
+    }
+}
+
+/**
+ * Groups and returns all duplicate images across connected folders
+ * where two or more records share the exact same SHA-256 contentHash.
+ *
+ * @returns {Promise<Array<{ hash: string, count: number, images: Array }>>}
+ */
+export async function findDuplicateImages() {
+    try {
+        const all = await getAllImages();
+        const hashMap = new Map();
+
+        for (const img of all) {
+            if (!img.contentHash) continue;
+            if (!hashMap.has(img.contentHash)) {
+                hashMap.set(img.contentHash, []);
+            }
+            hashMap.get(img.contentHash).push(img);
+        }
+
+        const duplicates = [];
+        for (const [hash, group] of hashMap.entries()) {
+            if (group.length > 1) {
+                duplicates.push({
+                    hash,
+                    count: group.length,
+                    images: group
+                });
+            }
+        }
+
+        return duplicates;
+    } catch (error) {
+        console.error('Error finding duplicate images:', error);
+        return [];
     }
 }

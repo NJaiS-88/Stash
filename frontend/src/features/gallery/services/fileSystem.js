@@ -112,8 +112,28 @@ export async function getFileFromHandle(handle) {
 }
 
 /**
- * Creates a catalog registry record for an image file according to Phase 2 schema.
- * Extracts size and lastModified for change detection without storing any binary/blob data.
+ * Computes the cryptographic SHA-256 content hash of a file's raw bytes in RAM.
+ * Uses browser native Web Crypto API (crypto.subtle).
+ *
+ * @param {File} file - Native browser File object
+ * @returns {Promise<string>} Hexadecimal SHA-256 hash string
+ */
+export async function computeFileHash(file) {
+    if (!file) return null;
+    try {
+        const arrayBuffer = await file.arrayBuffer();
+        const hashBuffer = await crypto.subtle.digest('SHA-256', arrayBuffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (err) {
+        console.warn('Could not compute SHA-256 for file:', file?.name, err);
+        return null;
+    }
+}
+
+/**
+ * Creates a catalog registry record for an image file according to Phase 2/Phase 5 schema.
+ * Computes or preserves the SHA-256 contentHash without storing any binary/blob data.
  *
  * @param {Object} fileItem
  * @param {string} folderId
@@ -123,6 +143,14 @@ export async function getFileFromHandle(handle) {
 export async function createImageRecord(fileItem, folderId, existingRecord = null) {
     try {
         const file = await fileItem.handle.getFile();
+        const isUnchanged = existingRecord &&
+            file.size === existingRecord.size &&
+            file.lastModified === existingRecord.lastModified;
+
+        const contentHash = (isUnchanged && existingRecord.contentHash)
+            ? existingRecord.contentHash
+            : await computeFileHash(file);
+
         return {
             imageId: existingRecord?.imageId || crypto.randomUUID(),
             folderId,
@@ -130,10 +158,10 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
             fileName: fileItem.name,
             size: file.size,
             lastModified: file.lastModified,
-            contentHash: existingRecord?.contentHash || null,
+            contentHash,
             fingerprint: existingRecord?.fingerprint || null,
             status: "available",
-            indexingStatus: existingRecord?.indexingStatus || "pending"
+            indexingStatus: isUnchanged ? (existingRecord.indexingStatus || "pending") : "pending"
         };
     } catch (err) {
         console.warn('Could not read metadata for:', fileItem.name, err);
@@ -190,6 +218,15 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
             matchedDiscoveredPaths.add(disc.path);
 
             const isIdentical = disc.size === existing.size && disc.lastModified === existing.lastModified;
+            let contentHash = isIdentical ? existing.contentHash : null;
+            if (!contentHash) {
+                try {
+                    const file = await disc.fileItem.handle.getFile();
+                    contentHash = await computeFileHash(file);
+                } catch {
+                    contentHash = null;
+                }
+            }
 
             results.push({
                 imageId: existing.imageId, // Stable identity preserved
@@ -198,7 +235,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 fileName: disc.name,
                 size: disc.size,
                 lastModified: disc.lastModified,
-                contentHash: isIdentical ? existing.contentHash : null,
+                contentHash,
                 fingerprint: isIdentical ? existing.fingerprint : null,
                 status: "available",
                 indexingStatus: isIdentical ? (existing.indexingStatus || "pending") : "pending"
@@ -209,13 +246,21 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
     // Unmatched existing pool for Pass 2
     const remainingExisting = existingRecords.filter(r => !matchedExistingIds.has(r.imageId));
 
-    // Pass 2: Rename / Move Detection (same size + lastModified, or contentHash)
+    // Pass 2: Rename / Move Detection (via SHA-256 contentHash or size + lastModified)
     for (const disc of discoveredFiles) {
         if (matchedDiscoveredPaths.has(disc.path)) continue;
 
+        let discHash = null;
+        try {
+            const file = await disc.fileItem.handle.getFile();
+            discHash = await computeFileHash(file);
+        } catch {
+            discHash = null;
+        }
+
         const renameMatchIndex = remainingExisting.findIndex(r =>
             !matchedExistingIds.has(r.imageId) &&
-            ((r.contentHash && disc.contentHash && r.contentHash === disc.contentHash) ||
+            ((r.contentHash && discHash && r.contentHash === discHash) ||
              (r.size === disc.size && r.lastModified === disc.lastModified))
         );
 
@@ -231,17 +276,30 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 fileName: disc.name,        // Updated filename
                 size: disc.size,
                 lastModified: disc.lastModified,
-                contentHash: existing.contentHash || null,
+                contentHash: discHash || existing.contentHash,
                 fingerprint: existing.fingerprint || null,
                 status: "available",
                 indexingStatus: existing.indexingStatus || "pending"
             });
+        } else {
+            // Unmatched file becomes a Pass 3 candidate with its computed hash
+            disc._computedHash = discHash;
         }
     }
 
-    // Pass 3: Brand new images (assign stable UUID)
+    // Pass 3: Brand new images (assign stable UUID and store computed SHA-256 hash)
     for (const disc of discoveredFiles) {
         if (matchedDiscoveredPaths.has(disc.path)) continue;
+
+        let hash = disc._computedHash;
+        if (!hash) {
+            try {
+                const file = await disc.fileItem.handle.getFile();
+                hash = await computeFileHash(file);
+            } catch {
+                hash = null;
+            }
+        }
 
         results.push({
             imageId: crypto.randomUUID(), // New stable identity
@@ -250,7 +308,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
             fileName: disc.name,
             size: disc.size,
             lastModified: disc.lastModified,
-            contentHash: null,
+            contentHash: hash,
             fingerprint: null,
             status: "available",
             indexingStatus: "pending"
@@ -295,6 +353,7 @@ export async function scanFolder(folder) {
             if (!item.isImage || !item.handle) continue;
             try {
                 const file = await item.handle.getFile();
+                const contentHash = await computeFileHash(file);
                 snapshot.push({
                     folderId: folder.id,
                     folderName: folder.name,
@@ -302,6 +361,7 @@ export async function scanFolder(folder) {
                     fileName: item.name,
                     size: file.size,
                     lastModified: file.lastModified,
+                    contentHash, // Phase 5: SHA-256 hash
                     file, // Ephemeral in RAM: used for preview, hashing, AI processing
                     handle: item.handle
                 });
@@ -335,8 +395,8 @@ export async function scanAllFolders(folders = []) {
 }
 
 /**
- * Phase 4: Reconciles the global multi-folder snapshot against all existing records in IndexedDB.
- * Handles renames, moves within a folder, and cross-folder moves seamlessly.
+ * Phase 4 & 5: Reconciles the global multi-folder snapshot against all existing records in IndexedDB.
+ * Handles renames, moves within a folder, and cross-folder moves seamlessly using SHA-256 contentHash.
  *
  * @param {Array<Object>} globalSnapshot - Output from scanAllFolders
  * @param {Array<Object>} allExistingRecords - All records from the images store
@@ -371,7 +431,7 @@ export function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords = [])
                 fileName: item.fileName,
                 size: item.size,
                 lastModified: item.lastModified,
-                contentHash: isIdentical ? existing.contentHash : null,
+                contentHash: item.contentHash || existing.contentHash,
                 fingerprint: isIdentical ? existing.fingerprint : null,
                 status: "available",
                 indexingStatus: isIdentical ? (existing.indexingStatus || "pending") : "pending"
