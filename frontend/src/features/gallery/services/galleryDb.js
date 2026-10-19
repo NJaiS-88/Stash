@@ -1,5 +1,5 @@
 const DB_NAME = 'stash_db';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const FOLDERS_STORE = 'folders';
 const IMAGES_STORE = 'images';
 
@@ -29,6 +29,10 @@ function getDB() {
             // Phase 5: Index on SHA-256 contentHash for instant duplicate detection & rename resolution
             if (!imageStore.indexNames.contains('contentHash')) {
                 imageStore.createIndex('contentHash', 'contentHash', { unique: false });
+            }
+            // Phase 7: Index on user-specific HMAC fingerprint for cloud reconciliation
+            if (!imageStore.indexNames.contains('fingerprint')) {
+                imageStore.createIndex('fingerprint', 'fingerprint', { unique: false });
             }
         };
         request.onsuccess = () => resolve(request.result);

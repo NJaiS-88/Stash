@@ -132,8 +132,69 @@ export async function computeFileHash(file) {
 }
 
 /**
- * Creates a catalog registry record for an image file according to Phase 2/Phase 5 schema.
- * Computes or preserves the SHA-256 contentHash without storing any binary/blob data.
+ * Retrieves the active per-user fingerprint secret key.
+ * Prefers the logged-in user's fingerprintSecret from localStorage,
+ * falling back to a persistent local secret for guest/offline operation.
+ *
+ * @returns {string} Hex-encoded 256-bit secret key
+ */
+export function getFingerprintSecret() {
+    const userSecret = localStorage.getItem('stash_user_fingerprint_secret');
+    if (userSecret) return userSecret;
+
+    const LOCAL_KEY = 'stash_local_fingerprint_secret';
+    let localSecret = localStorage.getItem(LOCAL_KEY);
+    if (!localSecret) {
+        const randomBytes = crypto.getRandomValues(new Uint8Array(32));
+        localSecret = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        localStorage.setItem(LOCAL_KEY, localSecret);
+    }
+    return localSecret;
+}
+
+/**
+ * Phase 7: Computes a user-specific HMAC-SHA256 fingerprint from a contentHash.
+ *
+ *   contentHash (raw SHA-256)
+ *          │
+ *          ▼
+ *   HMAC-SHA256(userSpecificKey, contentHash)
+ *          │
+ *          ▼
+ *     fingerprint (cloud-safe reconciliation identity)
+ *
+ * @param {string} contentHash - Hexadecimal SHA-256 content hash
+ * @param {string} [customSecret] - Optional specific secret key
+ * @returns {Promise<string|null>} Hexadecimal HMAC-SHA256 fingerprint
+ */
+export async function computeFingerprint(contentHash, customSecret = null) {
+    if (!contentHash) return null;
+    try {
+        const secret = customSecret || getFingerprintSecret();
+        const encoder = new TextEncoder();
+        const keyData = encoder.encode(secret);
+
+        const cryptoKey = await crypto.subtle.importKey(
+            'raw',
+            keyData,
+            { name: 'HMAC', hash: 'SHA-256' },
+            false,
+            ['sign']
+        );
+
+        const messageData = encoder.encode(contentHash);
+        const signature = await crypto.subtle.sign('HMAC', cryptoKey, messageData);
+        const hashArray = Array.from(new Uint8Array(signature));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    } catch (err) {
+        console.warn('Could not compute HMAC fingerprint:', err);
+        return null;
+    }
+}
+
+/**
+ * Creates a catalog registry record for an image file according to Phase 2/Phase 5/Phase 7 schema.
+ * Computes or preserves contentHash and user-specific HMAC fingerprint without storing binary data.
  *
  * @param {Object} fileItem
  * @param {string} folderId
@@ -151,6 +212,10 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
             ? existingRecord.contentHash
             : await computeFileHash(file);
 
+        const fingerprint = (isUnchanged && existingRecord.fingerprint)
+            ? existingRecord.fingerprint
+            : (contentHash ? await computeFingerprint(contentHash) : null);
+
         return {
             imageId: existingRecord?.imageId || crypto.randomUUID(),
             folderId,
@@ -159,7 +224,7 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
             size: file.size,
             lastModified: file.lastModified,
             contentHash,
-            fingerprint: existingRecord?.fingerprint || null,
+            fingerprint,
             status: "available",
             indexingStatus: isUnchanged ? (existingRecord.indexingStatus || "pending") : "pending"
         };
@@ -231,6 +296,10 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 }
             }
 
+            const fingerprint = (isIdentical && existing.fingerprint)
+                ? existing.fingerprint
+                : (contentHash ? await computeFingerprint(contentHash) : null);
+
             results.push({
                 imageId: existing.imageId, // Stable identity preserved
                 folderId,
@@ -239,7 +308,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 size: disc.size,
                 lastModified: disc.lastModified,
                 contentHash,
-                fingerprint: isIdentical ? existing.fingerprint : null,
+                fingerprint,
                 status: "available",
                 indexingStatus: isIdentical ? (existing.indexingStatus || "pending") : "pending"
             });
@@ -284,6 +353,9 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
             matchedExistingIds.add(existing.imageId);
             matchedDiscoveredPaths.add(disc.path);
 
+            const finalHash = discHash || existing.contentHash;
+            const fingerprint = existing.fingerprint || (finalHash ? await computeFingerprint(finalHash) : null);
+
             results.push({
                 imageId: existing.imageId, // Permanent imageId survives rename/relocation!
                 folderId,
@@ -291,8 +363,8 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 fileName: disc.name,        // Updated filename
                 size: disc.size,
                 lastModified: disc.lastModified,
-                contentHash: discHash || existing.contentHash,
-                fingerprint: existing.fingerprint || null,
+                contentHash: finalHash,
+                fingerprint,
                 status: "available",
                 indexingStatus: existing.indexingStatus || "pending"
             });
@@ -302,7 +374,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
         }
     }
 
-    // Pass 3: Brand new images (assign stable UUID and store computed SHA-256 hash)
+    // Pass 3: Brand new images (assign stable UUID and store computed SHA-256 hash & HMAC fingerprint)
     for (const disc of discoveredFiles) {
         if (matchedDiscoveredPaths.has(disc.path)) continue;
 
@@ -316,6 +388,8 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
             }
         }
 
+        const fingerprint = hash ? await computeFingerprint(hash) : null;
+
         results.push({
             imageId: crypto.randomUUID(), // New stable identity
             folderId,
@@ -324,7 +398,7 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
             size: disc.size,
             lastModified: disc.lastModified,
             contentHash: hash,
-            fingerprint: null,
+            fingerprint,
             status: "available",
             indexingStatus: "pending"
         });
@@ -449,6 +523,10 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 contentHash = await computeFileHash(item.file);
             }
 
+            const fingerprint = (isIdentical && existing.fingerprint)
+                ? existing.fingerprint
+                : (contentHash ? await computeFingerprint(contentHash) : null);
+
             results.push({
                 imageId: existing.imageId, // Retain stable identity
                 folderId: item.folderId,
@@ -457,7 +535,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 size: item.size,
                 lastModified: item.lastModified,
                 contentHash,
-                fingerprint: isIdentical ? existing.fingerprint : null,
+                fingerprint,
                 status: "available",
                 indexingStatus: isIdentical ? (existing.indexingStatus || "pending") : "pending"
             });
@@ -496,6 +574,9 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
             matchedExistingIds.add(renameMatch.imageId);
             matchedSnapshotKeys.add(key);
 
+            const finalHash = itemHash || renameMatch.contentHash;
+            const fingerprint = renameMatch.fingerprint || (finalHash ? await computeFingerprint(finalHash) : null);
+
             results.push({
                 imageId: renameMatch.imageId, // Permanent imageId survives even cross-folder moves!
                 folderId: item.folderId,       // Updated folderId
@@ -503,20 +584,21 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 fileName: item.fileName,
                 size: item.size,
                 lastModified: item.lastModified,
-                contentHash: itemHash || renameMatch.contentHash,
-                fingerprint: renameMatch.fingerprint || null,
+                contentHash: finalHash,
+                fingerprint,
                 status: "available",
                 indexingStatus: renameMatch.indexingStatus || "pending"
             });
         }
     }
 
-    // Pass 3: Brand new images (compute hash only here)
+    // Pass 3: Brand new images (compute hash & HMAC fingerprint)
     for (const item of globalSnapshot) {
         const key = getCompoundKey(item.folderId, item.relativePath);
         if (matchedSnapshotKeys.has(key)) continue;
 
         const hash = item.contentHash || await computeFileHash(item.file);
+        const fingerprint = hash ? await computeFingerprint(hash) : null;
 
         results.push({
             imageId: crypto.randomUUID(), // Brand-new identity
@@ -526,7 +608,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
             size: item.size,
             lastModified: item.lastModified,
             contentHash: hash,
-            fingerprint: null,
+            fingerprint,
             status: "available",
             indexingStatus: "pending"
         });

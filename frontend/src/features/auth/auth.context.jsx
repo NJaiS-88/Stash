@@ -9,6 +9,14 @@ export const AuthProvider = ({children}) => {
     const [errorMessage, setErrorMessage] = useState(null);
 
     useEffect(() => {
+        if (user?.fingerprintSecret) {
+            localStorage.setItem('stash_user_fingerprint_secret', user.fingerprintSecret);
+        } else if (user === null) {
+            localStorage.removeItem('stash_user_fingerprint_secret');
+        }
+    }, [user]);
+
+    useEffect(() => {
         const verify = async () => {
             try {
                 const response = await getUser();

@@ -43,7 +43,9 @@ const registerUser = async (req, res) => {
             user: { 
                 id: newUser._id, 
                 username: newUser.username, 
-                email: newUser.email }
+                email: newUser.email,
+                fingerprintSecret: newUser.fingerprintSecret
+            }
         });
     } catch (error) {
         return res.status(500).json({ message: error.message || "Server error" });
@@ -65,6 +67,13 @@ const loginUser = async (req, res) => {
         if(!isPasswordCorrect) {
             return res.status(400).json({ message: "Invalid credentials" });
         }
+
+        // Auto-populate fingerprintSecret for existing users if missing
+        if (!user.fingerprintSecret) {
+            user.fingerprintSecret = require('crypto').randomBytes(32).toString('hex');
+            await user.save();
+        }
+
         const token = jwt.sign({
             userId: user._id }, 
             process.env.JWT_SECRET, 
@@ -83,7 +92,9 @@ const loginUser = async (req, res) => {
             user: { 
                 id: user._id, 
                 username: user.username, 
-                email: user.email }
+                email: user.email,
+                fingerprintSecret: user.fingerprintSecret
+            }
         });
     } catch (error) {
         return res.status(500).json({ message: error.message || "Server error" });
@@ -108,10 +119,16 @@ const logoutUser = async (req, res) => {
 
 const verifyUser = async (req, res) => {
     try {
-        const user = await UserModel.findById(req.user.userId).select("-password");
+        let user = await UserModel.findById(req.user.userId).select("-password");
         if(!user) {
             return res.status(404).json({ message: "User not found" });
         }
+
+        if (!user.fingerprintSecret) {
+            user.fingerprintSecret = require('crypto').randomBytes(32).toString('hex');
+            await user.save();
+        }
+
         return res.status(200).json({ user });
     } catch (error) {
         return res.status(500).json({ message: error.message || "Server error" });
