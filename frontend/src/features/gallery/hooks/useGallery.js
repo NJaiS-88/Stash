@@ -1,13 +1,8 @@
 import { useContext, useEffect } from 'react';
 import GalleryContext from '../gallery.context';
-import {
-    selectDirectory,
-    enumerateDirectory,
-    flattenFiles,
-    buildImageRegistryForFolder,
-    scanAllFolders,
-    reconcileGlobalSnapshot
-} from '../services/fileSystem';
+import { selectDirectory, enumerateDirectory, flattenFiles } from '../services/fileSystem';
+import { buildImageRegistryForFolder, reconcileGlobalSnapshot } from '../services/reconciliation';
+import { scanAllFolders } from '../services/scanner';
 import {
     saveFolder,
     getAllFolders,
