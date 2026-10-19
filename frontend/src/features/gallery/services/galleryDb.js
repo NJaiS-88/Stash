@@ -344,3 +344,66 @@ export async function purgeMissingImages() {
         return [];
     }
 }
+
+/**
+ * Phase 14: Returns all available images with indexingStatus === 'pending'
+ * that require in-browser vision AI inference.
+ *
+ * @returns {Promise<Array>}
+ */
+export async function getPendingImages() {
+    try {
+        const available = await getAvailableImages();
+        return available.filter(img => img.indexingStatus === 'pending');
+    } catch (error) {
+        console.error('Error getting pending images:', error);
+        return [];
+    }
+}
+
+/**
+ * Phase 14: Updates an image record in IndexedDB with in-browser AI vision results.
+ * Sets indexingStatus to 'indexed' and preserves all other fields.
+ *
+ * @param {string} imageId
+ * @param {Object} aiData - { caption, keywords, embedding }
+ * @returns {Promise<boolean>}
+ */
+export async function updateImageAI(imageId, { caption, keywords, embedding = null }) {
+    if (!imageId) return false;
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readwrite');
+            const store = tx.objectStore(IMAGES_STORE);
+            const getReq = store.get(imageId);
+
+            getReq.onsuccess = () => {
+                const record = getReq.result;
+                if (!record) {
+                    resolve(false);
+                    return;
+                }
+
+                const updatedRecord = {
+                    ...record,
+                    caption: caption || record.caption,
+                    keywords: keywords || record.keywords || [],
+                    embedding: embedding || record.embedding || null,
+                    indexingStatus: 'indexed',
+                    indexedAt: Date.now()
+                };
+
+                const putReq = store.put(updatedRecord);
+                putReq.onsuccess = () => resolve(true);
+                putReq.onerror = () => reject(putReq.error);
+            };
+
+            getReq.onerror = () => reject(getReq.error);
+        });
+    } catch (error) {
+        console.error('Error updating image AI metadata:', imageId, error);
+        return false;
+    }
+}
+

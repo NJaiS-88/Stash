@@ -13,8 +13,24 @@ import {
     deleteImagesByFolder,
     getMissingImages,
     deleteImagePermanently,
-    purgeMissingImages
+    purgeMissingImages,
+    getPendingImages,
+    updateImageAI
 } from '../services/galleryDb';
+import { describeImage } from '../services/visionModel';
+
+/**
+ * Resolves a local File object from a directory handle and relative path.
+ */
+async function resolveFileFromFolder(folderHandle, relativePath) {
+    const parts = relativePath.split(/[/\\]+/).filter(Boolean);
+    let currentHandle = folderHandle;
+    for (let i = 0; i < parts.length - 1; i++) {
+        currentHandle = await currentHandle.getDirectoryHandle(parts[i]);
+    }
+    const fileHandle = await currentHandle.getFileHandle(parts[parts.length - 1]);
+    return await fileHandle.getFile();
+}
 
 export const useGallery = () => {
     const context = useContext(GalleryContext);
@@ -34,6 +50,13 @@ export const useGallery = () => {
     } = context;
 
     const [missingImages, setMissingImages] = useState([]);
+    const [indexingState, setIndexingState] = useState({
+        isIndexing: false,
+        current: 0,
+        total: 0,
+        currentFile: '',
+        modelStatus: ''
+    });
 
     const refreshMissingImages = async () => {
         try {
@@ -351,11 +374,89 @@ export const useGallery = () => {
         refreshMissingImages();
     }, []);
 
+    /**
+     * Phase 14: Run in-browser vision AI indexing on pending photos.
+     * Generates semantic captions and keywords completely client-side.
+     *
+     * @param {string|null} targetFolderId - Optional filter for specific folder
+     * @returns {Promise<{ indexed: number, total: number }>}
+     */
+    const runAIIndexing = async (targetFolderId = null) => {
+        let pending = await getPendingImages();
+        if (targetFolderId) {
+            pending = pending.filter(img => img.folderId === targetFolderId);
+        }
+
+        if (pending.length === 0) {
+            return { indexed: 0, total: 0 };
+        }
+
+        setIndexingState({
+            isIndexing: true,
+            current: 0,
+            total: pending.length,
+            currentFile: 'Initializing in-browser vision model...',
+            modelStatus: 'Loading model weights into browser cache...'
+        });
+
+        const currentFolders = folders.length > 0 ? folders : await getAllFolders();
+        const folderMap = new Map(currentFolders.map(f => [f.id, f]));
+
+        let indexedCount = 0;
+
+        for (let i = 0; i < pending.length; i++) {
+            const img = pending[i];
+            const folder = folderMap.get(img.folderId);
+            if (!folder?.handle) continue;
+
+            setIndexingState(prev => ({
+                ...prev,
+                current: i + 1,
+                currentFile: img.fileName,
+                modelStatus: `Analyzing photo ${i + 1} of ${pending.length}...`
+            }));
+
+            try {
+                const file = await resolveFileFromFolder(folder.handle, img.relativePath);
+                const { caption, keywords } = await describeImage(file);
+
+                await updateImageAI(img.imageId, { caption, keywords });
+                indexedCount++;
+
+                // Live state update: update activeFolder immediately so cards reflect new AI captions
+                setActiveFolder(prev => {
+                    if (!prev || prev.id !== img.folderId) return prev;
+                    return {
+                        ...prev,
+                        imageRecords: prev.imageRecords.map(r =>
+                            r.imageId === img.imageId
+                                ? { ...r, caption, keywords, indexingStatus: 'indexed' }
+                                : r
+                        )
+                    };
+                });
+            } catch (err) {
+                console.warn(`Could not index image ${img.fileName}:`, err);
+            }
+        }
+
+        setIndexingState({
+            isIndexing: false,
+            current: indexedCount,
+            total: pending.length,
+            currentFile: '',
+            modelStatus: 'Indexing complete!'
+        });
+
+        return { indexed: indexedCount, total: pending.length };
+    };
+
     return {
         folders,
         activeFolder,
         setActiveFolder,
         missingImages,
+        indexingState,
         loading,
         error,
         addFolder,
@@ -363,6 +464,7 @@ export const useGallery = () => {
         removeFolder,
         scanAll,
         reconnectFolder,
+        runAIIndexing,
         refreshMissingImages,
         deleteMissingPhoto,
         purgeAllMissing

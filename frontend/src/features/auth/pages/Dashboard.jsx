@@ -13,6 +13,8 @@ const Dashboard = () => {
         removeFolder,
         scanAll,
         reconnectFolder,
+        runAIIndexing,
+        indexingState,
         missingImages,
         deleteMissingPhoto,
         purgeAllMissing,
@@ -24,6 +26,25 @@ const Dashboard = () => {
     const [showMissingModal, setShowMissingModal] = useState(false);
     const [purging, setPurging] = useState(false);
     const navigate = useNavigate();
+
+    const handleRunAI = async () => {
+        try {
+            const res = await runAIIndexing();
+            if (res.total === 0) {
+                setScanMessage({
+                    text: 'All connected photos are already indexed! Zero AI re-computation needed.',
+                    hasMissing: false
+                });
+            } else {
+                setScanMessage({
+                    text: `Vision AI indexing complete: Analyzed ${res.indexed} photos directly inside your browser.`,
+                    hasMissing: false
+                });
+            }
+        } catch (err) {
+            console.error('AI indexing error:', err);
+        }
+    };
 
     const handleReconnect = async (folderId, e) => {
         e.stopPropagation();
@@ -120,20 +141,39 @@ const Dashboard = () => {
 
                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                         {folders.length > 0 && (
-                            <button
-                                onClick={handleRescanAll}
-                                disabled={loading || scanning}
-                                className="btn-logout"
-                                style={{ padding: '10px 18px', fontSize: '0.9rem' }}
-                                title="Run Global Multi-Folder Scan"
-                            >
-                                {scanning ? '🔄 Scanning All...' : '🔄 Rescan All Folders'}
-                            </button>
+                            <>
+                                <button
+                                    onClick={handleRunAI}
+                                    disabled={loading || scanning || indexingState.isIndexing}
+                                    className="btn-logout"
+                                    style={{
+                                        padding: '10px 18px',
+                                        fontSize: '0.9rem',
+                                        backgroundColor: '#f5f3ff',
+                                        color: '#6d28d9',
+                                        borderColor: '#ddd6fe',
+                                        fontWeight: 600
+                                    }}
+                                    title="Analyze unindexed photos with in-browser Vision AI"
+                                >
+                                    {indexingState.isIndexing ? '⚡ Indexing...' : '⚡ Run Local AI Vision'}
+                                </button>
+
+                                <button
+                                    onClick={handleRescanAll}
+                                    disabled={loading || scanning || indexingState.isIndexing}
+                                    className="btn-logout"
+                                    style={{ padding: '10px 18px', fontSize: '0.9rem' }}
+                                    title="Run Global Multi-Folder Scan"
+                                >
+                                    {scanning ? '🔄 Scanning All...' : '🔄 Rescan All Folders'}
+                                </button>
+                            </>
                         )}
 
                         <button
                             onClick={handleConnectNew}
-                            disabled={loading || scanning}
+                            disabled={loading || scanning || indexingState.isIndexing}
                             className="btn-nav-primary"
                             style={{ padding: '10px 18px', fontSize: '0.9rem' }}
                         >
@@ -141,6 +181,44 @@ const Dashboard = () => {
                         </button>
                     </div>
                 </div>
+
+                {indexingState.isIndexing && (
+                    <div style={{
+                        backgroundColor: '#f5f3ff',
+                        border: '1px solid #ddd6fe',
+                        borderRadius: 'var(--radius)',
+                        padding: '16px 20px',
+                        marginBottom: '20px',
+                        boxShadow: 'var(--shadow-subtle)'
+                    }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#5b21b6' }}>
+                                ⚡ In-Browser Vision AI Processing ({indexingState.current} / {indexingState.total})
+                            </span>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#7c3aed' }}>
+                                🔒 100% Client-Side Privacy
+                            </span>
+                        </div>
+                        <div style={{
+                            height: '8px',
+                            width: '100%',
+                            backgroundColor: '#ede9fe',
+                            borderRadius: '4px',
+                            overflow: 'hidden',
+                            marginBottom: '8px'
+                        }}>
+                            <div style={{
+                                height: '100%',
+                                width: `${indexingState.total ? (indexingState.current / indexingState.total) * 100 : 0}%`,
+                                backgroundColor: '#7c3aed',
+                                transition: 'width 0.3s ease'
+                            }} />
+                        </div>
+                        <p style={{ fontSize: '0.8rem', color: '#6d28d9', margin: 0 }}>
+                            {indexingState.modelStatus} {indexingState.currentFile ? `(${indexingState.currentFile})` : ''}
+                        </p>
+                    </div>
+                )}
 
                 {scanMessage && (
                     <div style={{

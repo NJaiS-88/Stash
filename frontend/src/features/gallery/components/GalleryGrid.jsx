@@ -117,6 +117,41 @@ function ThumbnailCard({ fileItem, record }) {
                 }}>
                     {fileItem.path}
                 </p>
+
+                {/* Phase 14: In-Browser AI Caption & Keyword Tags */}
+                {record?.caption && (
+                    <p style={{
+                        fontSize: '0.78rem',
+                        color: 'var(--text-secondary)',
+                        fontStyle: 'italic',
+                        marginTop: '6px',
+                        lineHeight: 1.3,
+                        display: '-webkit-box',
+                        WebkitLineClamp: 2,
+                        WebkitBoxOrient: 'vertical',
+                        overflow: 'hidden'
+                    }} title={record.caption}>
+                        "{record.caption}"
+                    </p>
+                )}
+
+                {record?.keywords && record.keywords.length > 0 && (
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginTop: '6px' }}>
+                        {record.keywords.slice(0, 4).map(kw => (
+                            <span key={kw} style={{
+                                fontSize: '0.65rem',
+                                padding: '1px 5px',
+                                borderRadius: '3px',
+                                backgroundColor: '#f1f5f9',
+                                color: '#475569',
+                                border: '1px solid #e2e8f0'
+                            }}>
+                                #{kw}
+                            </span>
+                        ))}
+                    </div>
+                )}
+
                 {record && (
                     <div style={{
                         display: 'flex',
@@ -134,11 +169,11 @@ function ThumbnailCard({ fileItem, record }) {
                             fontWeight: 600,
                             padding: '2px 6px',
                             borderRadius: '4px',
-                            backgroundColor: record.indexingStatus === 'indexed' ? '#ecfdf5' : '#f8fafc',
-                            color: record.indexingStatus === 'indexed' ? '#059669' : '#64748b',
-                            border: '1px solid #e2e8f0'
+                            backgroundColor: record.indexingStatus === 'indexed' ? '#ecfdf5' : '#fffbeb',
+                            color: record.indexingStatus === 'indexed' ? '#059669' : '#b45309',
+                            border: `1px solid ${record.indexingStatus === 'indexed' ? '#a7f3d0' : '#fde68a'}`
                         }}>
-                            {record.indexingStatus}
+                            {record.indexingStatus === 'indexed' ? '✨ Indexed' : '⏳ Pending AI'}
                         </span>
                     </div>
                 )}
@@ -148,12 +183,19 @@ function ThumbnailCard({ fileItem, record }) {
 }
 
 export default function GalleryGrid({ entries, flatFiles, imageRecords = [], searchQuery = '' }) {
-    const [viewMode, setViewMode] = useState('tree');
+    const [viewMode, setViewMode] = useState('grid');
 
     const recordMap = new Map(imageRecords.map(r => [r.relativePath, r]));
 
     const filteredFiles = searchQuery
-        ? flatFiles.filter(f => f.name.toLowerCase().includes(searchQuery.toLowerCase()) || f.path.toLowerCase().includes(searchQuery.toLowerCase()))
+        ? flatFiles.filter(f => {
+            const query = searchQuery.toLowerCase();
+            const rec = recordMap.get(f.path);
+            const matchesName = f.name.toLowerCase().includes(query) || f.path.toLowerCase().includes(query);
+            const matchesCaption = rec?.caption?.toLowerCase().includes(query);
+            const matchesKeywords = rec?.keywords?.some(k => k.toLowerCase().includes(query));
+            return matchesName || matchesCaption || matchesKeywords;
+        })
         : flatFiles;
 
     return (
