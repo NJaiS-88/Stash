@@ -142,8 +142,15 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
 }
 
 /**
- * Builds the image registry records for all image files in a folder.
- * Preserves permanent imageId if an image was already registered.
+ * Builds and reconciles image registry records for all image files in a folder.
+ * Preserves permanent imageId even across renames or moves.
+ *
+ * Algorithm:
+ * 1. Pass 1 - Exact Location Match: Matches by relativePath if unchanged.
+ * 2. Pass 2 - Rename / Move Detection: Matches unmatched files by identical
+ *    (size + lastModified) or contentHash, preserving imageId and updating path.
+ * 3. Pass 3 - New Images: Assigns a newly minted crypto.randomUUID().
+ * 4. Pass 4 - Missing Images: Preserves missing records with status: 'missing'.
  *
  * @param {Array} flatFiles
  * @param {string} folderId
@@ -151,17 +158,114 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
  * @returns {Promise<Array>}
  */
 export async function buildImageRegistryForFolder(flatFiles, folderId, existingRecords = []) {
-    const existingMap = new Map(existingRecords.map(r => [r.relativePath, r]));
-    const records = [];
+    const imageFiles = flatFiles.filter(f => f.isImage && f.handle);
+    const discoveredFiles = [];
 
-    for (const fileItem of flatFiles) {
-        if (!fileItem.isImage || !fileItem.handle) continue;
-        const existing = existingMap.get(fileItem.path);
-        const record = await createImageRecord(fileItem, folderId, existing);
-        if (record) {
-            records.push(record);
+    for (const fileItem of imageFiles) {
+        try {
+            const file = await fileItem.handle.getFile();
+            discoveredFiles.push({
+                fileItem,
+                path: fileItem.path,
+                name: fileItem.name,
+                size: file.size,
+                lastModified: file.lastModified
+            });
+        } catch (err) {
+            console.warn('Could not read metadata for:', fileItem.name, err);
         }
     }
 
-    return records;
+    const matchedExistingIds = new Set();
+    const matchedDiscoveredPaths = new Set();
+    const results = [];
+
+    const existingByPath = new Map(existingRecords.map(r => [r.relativePath, r]));
+
+    // Pass 1: Exact location / relativePath match
+    for (const disc of discoveredFiles) {
+        const existing = existingByPath.get(disc.path);
+        if (existing && !matchedExistingIds.has(existing.imageId)) {
+            matchedExistingIds.add(existing.imageId);
+            matchedDiscoveredPaths.add(disc.path);
+
+            const isIdentical = disc.size === existing.size && disc.lastModified === existing.lastModified;
+
+            results.push({
+                imageId: existing.imageId, // Stable identity preserved
+                folderId,
+                relativePath: disc.path,
+                fileName: disc.name,
+                size: disc.size,
+                lastModified: disc.lastModified,
+                contentHash: isIdentical ? existing.contentHash : null,
+                fingerprint: isIdentical ? existing.fingerprint : null,
+                status: "available",
+                indexingStatus: isIdentical ? (existing.indexingStatus || "pending") : "pending"
+            });
+        }
+    }
+
+    // Unmatched existing pool for Pass 2
+    const remainingExisting = existingRecords.filter(r => !matchedExistingIds.has(r.imageId));
+
+    // Pass 2: Rename / Move Detection (same size + lastModified, or contentHash)
+    for (const disc of discoveredFiles) {
+        if (matchedDiscoveredPaths.has(disc.path)) continue;
+
+        const renameMatchIndex = remainingExisting.findIndex(r =>
+            !matchedExistingIds.has(r.imageId) &&
+            ((r.contentHash && disc.contentHash && r.contentHash === disc.contentHash) ||
+             (r.size === disc.size && r.lastModified === disc.lastModified))
+        );
+
+        if (renameMatchIndex !== -1) {
+            const existing = remainingExisting[renameMatchIndex];
+            matchedExistingIds.add(existing.imageId);
+            matchedDiscoveredPaths.add(disc.path);
+
+            results.push({
+                imageId: existing.imageId, // Permanent imageId survives rename/relocation!
+                folderId,
+                relativePath: disc.path,    // Updated location
+                fileName: disc.name,        // Updated filename
+                size: disc.size,
+                lastModified: disc.lastModified,
+                contentHash: existing.contentHash || null,
+                fingerprint: existing.fingerprint || null,
+                status: "available",
+                indexingStatus: existing.indexingStatus || "pending"
+            });
+        }
+    }
+
+    // Pass 3: Brand new images (assign stable UUID)
+    for (const disc of discoveredFiles) {
+        if (matchedDiscoveredPaths.has(disc.path)) continue;
+
+        results.push({
+            imageId: crypto.randomUUID(), // New stable identity
+            folderId,
+            relativePath: disc.path,
+            fileName: disc.name,
+            size: disc.size,
+            lastModified: disc.lastModified,
+            contentHash: null,
+            fingerprint: null,
+            status: "available",
+            indexingStatus: "pending"
+        });
+    }
+
+    // Pass 4: Existing records no longer found on disk (mark missing, keep imageId)
+    for (const existing of remainingExisting) {
+        if (!matchedExistingIds.has(existing.imageId)) {
+            results.push({
+                ...existing,
+                status: "missing"
+            });
+        }
+    }
+
+    return results;
 }
