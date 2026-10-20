@@ -14,6 +14,9 @@ const Dashboard = () => {
         scanAll,
         reconnectFolder,
         runAIIndexing,
+        pauseAIIndexing,
+        resumeAIIndexing,
+        isAIPaused,
         indexingState,
         missingImages,
         deleteMissingPhoto,
@@ -35,9 +38,9 @@ const Dashboard = () => {
                     text: 'All connected photos are already indexed! Zero AI re-computation needed.',
                     hasMissing: false
                 });
-            } else {
+            } else if (!res.paused) {
                 setScanMessage({
-                    text: `Vision AI indexing complete: Analyzed ${res.indexed} photos directly inside your browser.`,
+                    text: `Florence-2 AI indexing complete: Generated detailed captions for ${res.indexed} photos with WebGPU acceleration.`,
                     hasMissing: false
                 });
             }
@@ -142,22 +145,56 @@ const Dashboard = () => {
                     <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                         {folders.length > 0 && (
                             <>
-                                <button
-                                    onClick={handleRunAI}
-                                    disabled={loading || scanning || indexingState.isIndexing}
-                                    className="btn-logout"
-                                    style={{
-                                        padding: '10px 18px',
-                                        fontSize: '0.9rem',
-                                        backgroundColor: '#f5f3ff',
-                                        color: '#6d28d9',
-                                        borderColor: '#ddd6fe',
-                                        fontWeight: 600
-                                    }}
-                                    title="Analyze unindexed photos with in-browser Vision AI"
-                                >
-                                    {indexingState.isIndexing ? '⚡ Indexing...' : '⚡ Run Local AI Vision'}
-                                </button>
+                                {indexingState.isIndexing ? (
+                                    <button
+                                        onClick={pauseAIIndexing}
+                                        className="btn-logout"
+                                        style={{
+                                            padding: '10px 18px',
+                                            fontSize: '0.9rem',
+                                            backgroundColor: '#fffbeb',
+                                            color: '#b45309',
+                                            borderColor: '#fde68a',
+                                            fontWeight: 600
+                                        }}
+                                        title="Pause background Florence-2 AI vision processing"
+                                    >
+                                        ⏸ Pause AI
+                                    </button>
+                                ) : isAIPaused ? (
+                                    <button
+                                        onClick={resumeAIIndexing}
+                                        className="btn-logout"
+                                        style={{
+                                            padding: '10px 18px',
+                                            fontSize: '0.9rem',
+                                            backgroundColor: '#eff6ff',
+                                            color: '#1d4ed8',
+                                            borderColor: '#bfdbfe',
+                                            fontWeight: 600
+                                        }}
+                                        title="Resume background Florence-2 AI vision processing"
+                                    >
+                                        ▶ Resume AI
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={handleRunAI}
+                                        disabled={loading || scanning}
+                                        className="btn-logout"
+                                        style={{
+                                            padding: '10px 18px',
+                                            fontSize: '0.9rem',
+                                            backgroundColor: '#f5f3ff',
+                                            color: '#6d28d9',
+                                            borderColor: '#ddd6fe',
+                                            fontWeight: 600
+                                        }}
+                                        title="Analyze unindexed photos with Florence-2 Vision AI (WebGPU/WASM accelerated)"
+                                    >
+                                        ⚡ Run Florence-2 AI
+                                    </button>
+                                )}
 
                                 <button
                                     onClick={handleRescanAll}
@@ -182,27 +219,60 @@ const Dashboard = () => {
                     </div>
                 </div>
 
-                {indexingState.isIndexing && (
+                {(indexingState.isIndexing || isAIPaused) && (
                     <div style={{
-                        backgroundColor: '#f5f3ff',
-                        border: '1px solid #ddd6fe',
+                        backgroundColor: isAIPaused ? '#fffbeb' : '#f5f3ff',
+                        border: `1px solid ${isAIPaused ? '#fde68a' : '#ddd6fe'}`,
                         borderRadius: 'var(--radius)',
                         padding: '16px 20px',
                         marginBottom: '20px',
                         boxShadow: 'var(--shadow-subtle)'
                     }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                            <span style={{ fontSize: '0.9rem', fontWeight: 600, color: '#5b21b6' }}>
-                                ⚡ In-Browser Vision AI Processing ({indexingState.current} / {indexingState.total})
-                            </span>
-                            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#7c3aed' }}>
-                                🔒 100% Client-Side Privacy
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <span style={{ fontSize: '0.9rem', fontWeight: 600, color: isAIPaused ? '#92400e' : '#5b21b6' }}>
+                                    {isAIPaused ? '⏸ Florence-2 AI Paused' : '⚡ Florence-2 Detailed Vision AI'} ({indexingState.current} / {indexingState.total})
+                                </span>
+                                {indexingState.isIndexing ? (
+                                    <button
+                                        onClick={pauseAIIndexing}
+                                        style={{
+                                            fontSize: '0.75rem',
+                                            padding: '2px 8px',
+                                            borderRadius: '4px',
+                                            backgroundColor: '#ede9fe',
+                                            border: '1px solid #c4b5fd',
+                                            color: '#6d28d9',
+                                            cursor: 'pointer'
+                                        }}
+                                    >
+                                        Pause
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={resumeAIIndexing}
+                                        style={{
+                                            fontSize: '0.75rem',
+                                            padding: '2px 8px',
+                                            borderRadius: '4px',
+                                            backgroundColor: '#fef3c7',
+                                            border: '1px solid #fde68a',
+                                            color: '#b45309',
+                                            cursor: 'pointer'
+                                        }}
+                                    >
+                                        Resume
+                                    </button>
+                                )}
+                            </div>
+                            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: isAIPaused ? '#b45309' : '#7c3aed' }}>
+                                🔒 100% Client-Side Privacy • Florence-2-base-ft
                             </span>
                         </div>
                         <div style={{
                             height: '8px',
                             width: '100%',
-                            backgroundColor: '#ede9fe',
+                            backgroundColor: isAIPaused ? '#fef3c7' : '#ede9fe',
                             borderRadius: '4px',
                             overflow: 'hidden',
                             marginBottom: '8px'
@@ -210,11 +280,11 @@ const Dashboard = () => {
                             <div style={{
                                 height: '100%',
                                 width: `${indexingState.total ? (indexingState.current / indexingState.total) * 100 : 0}%`,
-                                backgroundColor: '#7c3aed',
+                                backgroundColor: isAIPaused ? '#f59e0b' : '#7c3aed',
                                 transition: 'width 0.3s ease'
                             }} />
                         </div>
-                        <p style={{ fontSize: '0.8rem', color: '#6d28d9', margin: 0 }}>
+                        <p style={{ fontSize: '0.8rem', color: isAIPaused ? '#92400e' : '#6d28d9', margin: 0 }}>
                             {indexingState.modelStatus} {indexingState.currentFile ? `(${indexingState.currentFile})` : ''}
                         </p>
                     </div>

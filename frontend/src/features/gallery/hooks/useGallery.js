@@ -1,6 +1,6 @@
-import { useContext, useEffect, useState } from 'react';
+import { useContext, useEffect, useState, useRef } from 'react';
 import GalleryContext from '../gallery.context';
-import { selectDirectory, enumerateDirectory, flattenFiles } from '../services/fileSystem';
+import { selectDirectory, enumerateDirectory, flattenFiles, streamDirectoryFiles, resolveFileByPath } from '../services/fileSystem';
 import { buildImageRegistryForFolder, reconcileGlobalSnapshot } from '../services/reconciliation';
 import { scanAllFolders } from '../services/scanner';
 import {
@@ -15,22 +15,10 @@ import {
     deleteImagePermanently,
     purgeMissingImages,
     getPendingImages,
-    updateImageAI
+    updateImageAI,
+    resetStaleProcessingImages
 } from '../services/galleryDb';
 import { describeImage } from '../services/visionModel';
-
-/**
- * Resolves a local File object from a directory handle and relative path.
- */
-async function resolveFileFromFolder(folderHandle, relativePath) {
-    const parts = relativePath.split(/[/\\]+/).filter(Boolean);
-    let currentHandle = folderHandle;
-    for (let i = 0; i < parts.length - 1; i++) {
-        currentHandle = await currentHandle.getDirectoryHandle(parts[i]);
-    }
-    const fileHandle = await currentHandle.getFileHandle(parts[parts.length - 1]);
-    return await fileHandle.getFile();
-}
 
 export const useGallery = () => {
     const context = useContext(GalleryContext);
@@ -46,17 +34,32 @@ export const useGallery = () => {
         loading,
         setLoading,
         error,
-        setError
+        setError,
+        indexingState,
+        pauseAI,
+        resumeAI,
+        triggerAI
     } = context;
 
     const [missingImages, setMissingImages] = useState([]);
-    const [indexingState, setIndexingState] = useState({
-        isIndexing: false,
-        current: 0,
-        total: 0,
-        currentFile: '',
-        modelStatus: ''
-    });
+
+    // Live UI card update: when background worker completes an image, update activeFolder state immediately
+    useEffect(() => {
+        if (indexingState?.lastIndexed && activeFolder?.id === indexingState.lastIndexed.folderId) {
+            const { imageId, caption, keywords } = indexingState.lastIndexed;
+            setActiveFolder(prev => {
+                if (!prev || prev.id !== indexingState.lastIndexed.folderId) return prev;
+                return {
+                    ...prev,
+                    imageRecords: prev.imageRecords.map(r =>
+                        r.imageId === imageId
+                            ? { ...r, caption, keywords, indexingStatus: 'indexed' }
+                            : r
+                    )
+                };
+            });
+        }
+    }, [indexingState?.lastIndexed, activeFolder?.id]);
 
     const refreshMissingImages = async () => {
         try {
@@ -93,6 +96,10 @@ export const useGallery = () => {
         }
     };
 
+    /**
+     * Connects a new folder using incremental streaming.
+     * Automatically enqueues new photos into the running background AI queue.
+     */
     const addFolder = async () => {
         setError(null);
         setLoading(true);
@@ -105,38 +112,50 @@ export const useGallery = () => {
 
             console.log('Connected folder handle:', handle);
 
-            const enumerated = await enumerateDirectory(handle);
-            const flattened = flattenFiles(enumerated);
-
             const folderItem = {
                 id: crypto.randomUUID(),
                 name: handle.name,
                 handle,
-                fileCount: flattened.length,
+                fileCount: 0,
                 addedAt: Date.now()
             };
 
             await saveFolder(folderItem);
 
-            // Phase 2 & 11: Reconcile against all existing records so newly connected folders immediately restore missing images!
             const allExisting = await getAllImages();
-            const imageRecords = await buildImageRegistryForFolder(flattened, folderItem.id, allExisting);
-            await saveImageRecords(imageRecords);
+            let totalDiscovered = 0;
+
+            // Stream directory in small batches directly to IndexedDB
+            await streamDirectoryFiles(handle, async (batch) => {
+                totalDiscovered += batch.length;
+                const batchRecords = await buildImageRegistryForFolder(batch, folderItem.id, allExisting);
+                await saveImageRecords(batchRecords);
+            }, 100);
+
+            folderItem.fileCount = totalDiscovered;
+            await saveFolder(folderItem);
 
             setFolders(prev => {
                 const existing = prev.filter(f => f.id !== folderItem.id);
                 return [...existing, folderItem];
             });
 
+            const savedRecords = await getImagesByFolder(folderItem.id);
             const loadedFolder = {
                 ...folderItem,
-                entries: enumerated,
-                flatFiles: flattened,
-                imageRecords: imageRecords.filter(r => r.status === 'available')
+                entries: [],
+                flatFiles: [],
+                imageRecords: savedRecords.filter(r => r.status === 'available')
             };
 
             setActiveFolder(loadedFolder);
             await refreshMissingImages();
+
+            // Automatically notify background AI daemon to start processing newly added photos
+            if (triggerAI) {
+                triggerAI();
+            }
+
             return loadedFolder;
         } catch (err) {
             console.error('Error adding folder:', err);
@@ -147,6 +166,10 @@ export const useGallery = () => {
         }
     };
 
+    /**
+     * Selects and loads a folder from IndexedDB.
+     * Uses lightweight image records to maintain 60fps responsiveness.
+     */
     const selectFolder = async (folderId) => {
         setError(null);
         setLoading(true);
@@ -162,22 +185,30 @@ export const useGallery = () => {
                 }
             }
 
-            const enumerated = await enumerateDirectory(folder.handle);
-            const flattened = flattenFiles(enumerated);
-
-            // Phase 2 & 11: Load folder records and cross-folder missing records to detect restorations
+            // Immediately display existing records from IndexedDB
             const folderRecords = await getImagesByFolder(folder.id);
-            const missingRecords = await getMissingImages();
-            const existingToMatch = [...folderRecords, ...missingRecords.filter(m => m.folderId !== folder.id)];
-            const imageRecords = await buildImageRegistryForFolder(flattened, folder.id, existingToMatch);
-            await saveImageRecords(imageRecords);
-
             setActiveFolder({
                 ...folder,
-                entries: enumerated,
-                flatFiles: flattened,
-                imageRecords: imageRecords.filter(r => r.status === 'available')
+                entries: [],
+                flatFiles: [],
+                imageRecords: folderRecords.filter(r => r.status === 'available')
             });
+
+            // Reconcile changes in background via streaming
+            const missingRecords = await getMissingImages();
+            const existingToMatch = [...folderRecords, ...missingRecords.filter(m => m.folderId !== folder.id)];
+
+            await streamDirectoryFiles(folder.handle, async (batch) => {
+                const batchRecords = await buildImageRegistryForFolder(batch, folder.id, existingToMatch);
+                await saveImageRecords(batchRecords);
+            }, 100);
+
+            const refreshedRecords = await getImagesByFolder(folder.id);
+            setActiveFolder(prev => (prev?.id === folder.id ? {
+                ...prev,
+                fileCount: refreshedRecords.length,
+                imageRecords: refreshedRecords.filter(r => r.status === 'available')
+            } : prev));
 
             await refreshMissingImages();
         } catch (err) {
@@ -191,7 +222,6 @@ export const useGallery = () => {
     const removeFolder = async (folderId) => {
         try {
             await deleteFolder(folderId);
-            // Phase 2: Clean up image registry records for this folder
             await deleteImagesByFolder(folderId);
 
             setFolders(prev => prev.filter(f => f.id !== folderId));
@@ -206,11 +236,7 @@ export const useGallery = () => {
     };
 
     /**
-     * Phase 12: Reconnect an unavailable or moved folder.
-     * Preserves the existing folderId container so all image mappings remain intact!
-     *
-     * @param {string} folderId
-     * @returns {Promise<boolean>}
+     * Reconnect an unavailable or moved folder.
      */
     const reconnectFolder = async (folderId) => {
         setError(null);
@@ -219,42 +245,42 @@ export const useGallery = () => {
             const folder = folders.find(f => f.id === folderId);
             if (!folder) throw new Error('Folder not found');
 
-            // Prompt user to select directory to re-attach or re-authorize
             const handle = await selectDirectory();
             if (!handle) {
                 setLoading(false);
                 return false;
             }
 
-            const enumerated = await enumerateDirectory(handle);
-            const flattened = flattenFiles(enumerated);
+            let discoveredCount = 0;
+            const allExisting = await getAllImages();
 
-            // Re-link new handle to the SAME permanent folderId!
+            await streamDirectoryFiles(handle, async (batch) => {
+                discoveredCount += batch.length;
+                const batchRecords = await buildImageRegistryForFolder(batch, folderId, allExisting);
+                await saveImageRecords(batchRecords);
+            }, 100);
+
             const updatedFolder = {
                 ...folder,
                 name: handle.name,
                 handle,
                 status: 'available',
                 error: null,
-                fileCount: flattened.length,
+                fileCount: discoveredCount,
                 reconnectedAt: Date.now()
             };
 
             await saveFolder(updatedFolder);
-
-            // Reconcile images against all existing records
-            const allExisting = await getAllImages();
-            const imageRecords = await buildImageRegistryForFolder(flattened, folderId, allExisting);
-            await saveImageRecords(imageRecords);
+            const savedRecords = await getImagesByFolder(folderId);
 
             setFolders(prev => prev.map(f => f.id === folderId ? updatedFolder : f));
 
             if (activeFolder?.id === folderId) {
                 setActiveFolder({
                     ...updatedFolder,
-                    entries: enumerated,
-                    flatFiles: flattened,
-                    imageRecords: imageRecords.filter(r => r.status === 'available')
+                    entries: [],
+                    flatFiles: [],
+                    imageRecords: savedRecords.filter(r => r.status === 'available')
                 });
             }
 
@@ -270,11 +296,7 @@ export const useGallery = () => {
     };
 
     /**
-     * Phase 4 & Phase 12: Global Multi-Folder Scan
-     * Scans ALL connected folders in parallel, aggregates their files into a single snapshot,
-     * reconciles against all existing records in IndexedDB, and synchronizes folder states.
-     *
-     * @returns {Promise<{ snapshot: Array, records: Array }>}
+     * Scans ALL connected folders, reconciles states, and saves updates.
      */
     const scanAll = async () => {
         setError(null);
@@ -285,10 +307,8 @@ export const useGallery = () => {
                 return { snapshot: [], records: [] };
             }
 
-            // 1. Scan ALL folders into a single unified global snapshot
             const globalSnapshot = await scanAllFolders(currentFolders);
 
-            // Phase 12: Synchronize folder updates (renames & availability status)
             if (globalSnapshot.folderUpdates && globalSnapshot.folderUpdates.length > 0) {
                 const updatedFolders = currentFolders.map(folder => {
                     const update = globalSnapshot.folderUpdates.find(u => u.folderId === folder.id);
@@ -309,11 +329,9 @@ export const useGallery = () => {
                 setFolders(updatedFolders);
             }
 
-            // 2. Reconcile across all folders (Scenario A, B, C, D, E)
             const allExisting = await getAllImages();
             const { allRecords, toUpsert, summary } = await reconcileGlobalSnapshot(globalSnapshot, allExisting);
 
-            // 3. Persist ONLY toUpsert into IndexedDB (unchanged & already-missing records skip DB writes)
             if (toUpsert && toUpsert.length > 0) {
                 await saveImageRecords(toUpsert);
             }
@@ -336,6 +354,10 @@ export const useGallery = () => {
         }
     };
 
+    /**
+     * Restore saved folders on startup.
+     * The background AI daemon is already automatically booted by GalleryProvider.
+     */
     useEffect(() => {
         const restoreAllFolders = async () => {
             try {
@@ -347,108 +369,48 @@ export const useGallery = () => {
                 // Auto-activate the first folder if none active
                 if (!activeFolder && saved.length > 0) {
                     const first = saved[0];
-                    const perm = await first.handle.queryPermission({ mode: 'read' });
-                    if (perm === 'granted') {
-                        const enumerated = await enumerateDirectory(first.handle);
-                        const flattened = flattenFiles(enumerated);
-                        const folderRecords = await getImagesByFolder(first.id);
-                        const missingRecords = await getMissingImages();
-                        const existingToMatch = [...folderRecords, ...missingRecords.filter(m => m.folderId !== first.id)];
-                        const imageRecords = await buildImageRegistryForFolder(flattened, first.id, existingToMatch);
-                        await saveImageRecords(imageRecords);
-
-                        setActiveFolder({
-                            ...first,
-                            entries: enumerated,
-                            flatFiles: flattened,
-                            imageRecords: imageRecords.filter(r => r.status === 'available')
-                        });
+                    try {
+                        const perm = await first.handle.queryPermission({ mode: 'read' });
+                        if (perm === 'granted') {
+                            const folderRecords = await getImagesByFolder(first.id);
+                            setActiveFolder({
+                                ...first,
+                                entries: [],
+                                flatFiles: [],
+                                imageRecords: folderRecords.filter(r => r.status === 'available')
+                            });
+                        }
+                    } catch (pErr) {
+                        console.warn('Could not query permission on startup:', pErr);
                     }
                 }
+
+                await refreshMissingImages();
             } catch (err) {
-                console.warn('Could not restore saved folders:', err);
+                console.warn('Could not restore saved folders on boot:', err);
             }
         };
 
         restoreAllFolders();
-        refreshMissingImages();
     }, []);
 
-    /**
-     * Phase 14: Run in-browser vision AI indexing on pending photos.
-     * Generates semantic captions and keywords completely client-side.
-     *
-     * @param {string|null} targetFolderId - Optional filter for specific folder
-     * @returns {Promise<{ indexed: number, total: number }>}
-     */
-    const runAIIndexing = async (targetFolderId = null) => {
-        let pending = await getPendingImages();
-        if (targetFolderId) {
-            pending = pending.filter(img => img.folderId === targetFolderId);
+    const runAIIndexing = async () => {
+        if (triggerAI) {
+            triggerAI();
         }
+        return { started: true };
+    };
 
-        if (pending.length === 0) {
-            return { indexed: 0, total: 0 };
+    const pauseAIIndexing = () => {
+        if (pauseAI) {
+            pauseAI();
         }
+    };
 
-        setIndexingState({
-            isIndexing: true,
-            current: 0,
-            total: pending.length,
-            currentFile: 'Initializing in-browser vision model...',
-            modelStatus: 'Loading model weights into browser cache...'
-        });
-
-        const currentFolders = folders.length > 0 ? folders : await getAllFolders();
-        const folderMap = new Map(currentFolders.map(f => [f.id, f]));
-
-        let indexedCount = 0;
-
-        for (let i = 0; i < pending.length; i++) {
-            const img = pending[i];
-            const folder = folderMap.get(img.folderId);
-            if (!folder?.handle) continue;
-
-            setIndexingState(prev => ({
-                ...prev,
-                current: i + 1,
-                currentFile: img.fileName,
-                modelStatus: `Analyzing photo ${i + 1} of ${pending.length}...`
-            }));
-
-            try {
-                const file = await resolveFileFromFolder(folder.handle, img.relativePath);
-                const { caption, keywords } = await describeImage(file);
-
-                await updateImageAI(img.imageId, { caption, keywords });
-                indexedCount++;
-
-                // Live state update: update activeFolder immediately so cards reflect new AI captions
-                setActiveFolder(prev => {
-                    if (!prev || prev.id !== img.folderId) return prev;
-                    return {
-                        ...prev,
-                        imageRecords: prev.imageRecords.map(r =>
-                            r.imageId === img.imageId
-                                ? { ...r, caption, keywords, indexingStatus: 'indexed' }
-                                : r
-                        )
-                    };
-                });
-            } catch (err) {
-                console.warn(`Could not index image ${img.fileName}:`, err);
-            }
+    const resumeAIIndexing = () => {
+        if (resumeAI) {
+            resumeAI();
         }
-
-        setIndexingState({
-            isIndexing: false,
-            current: indexedCount,
-            total: pending.length,
-            currentFile: '',
-            modelStatus: 'Indexing complete!'
-        });
-
-        return { indexed: indexedCount, total: pending.length };
     };
 
     return {
@@ -456,7 +418,8 @@ export const useGallery = () => {
         activeFolder,
         setActiveFolder,
         missingImages,
-        indexingState,
+        indexingState: indexingState || { isIndexing: false, current: 0, total: 0, currentFile: '', modelStatus: 'Idle' },
+        isAIPaused: Boolean(indexingState?.isPaused),
         loading,
         error,
         addFolder,
@@ -465,6 +428,8 @@ export const useGallery = () => {
         scanAll,
         reconnectFolder,
         runAIIndexing,
+        pauseAIIndexing,
+        resumeAIIndexing,
         refreshMissingImages,
         deleteMissingPhoto,
         purgeAllMissing

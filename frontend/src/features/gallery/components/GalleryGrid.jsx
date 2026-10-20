@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { getFileFromHandle } from '../services/fileSystem';
+import { useState, useEffect, useRef } from 'react';
+import { getFileFromHandle, resolveFileByPath } from '../services/fileSystem';
 
 function TreeItem({ item, depth = 0 }) {
     const isDir = item.kind === 'directory';
@@ -33,8 +33,15 @@ function TreeItem({ item, depth = 0 }) {
     );
 }
 
-function ThumbnailCard({ fileItem, record }) {
+function ThumbnailCard({ record, fileItem, rootHandle }) {
     const [imgUrl, setImgUrl] = useState(null);
+    const [isVisible, setIsVisible] = useState(false);
+    const cardRef = useRef(null);
+    const activeUrlRef = useRef(null);
+
+    const displayName = record?.fileName || fileItem?.name || record?.relativePath || 'Photo';
+    const displayPath = record?.relativePath || fileItem?.path || '';
+    const displaySize = record?.size || fileItem?.size || 0;
 
     const formatSize = (bytes) => {
         if (!bytes) return '';
@@ -43,39 +50,87 @@ function ThumbnailCard({ fileItem, record }) {
         return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
     };
 
+    // Viewport-based IntersectionObserver: only resolve file and create Blob URL when on screen
     useEffect(() => {
-        let isMounted = true;
-        let createdUrl = null;
+        const el = cardRef.current;
+        if (!el) return;
 
-        const loadPreview = async () => {
-            if (!fileItem.isImage || !fileItem.handle) return;
-            try {
-                const file = await getFileFromHandle(fileItem.handle);
-                createdUrl = URL.createObjectURL(file);
-                if (isMounted) setImgUrl(createdUrl);
-            } catch (err) {
-                console.warn('Could not load thumbnail for:', fileItem.name, err);
+        const observer = new IntersectionObserver(
+            ([entry]) => {
+                setIsVisible(entry.isIntersecting);
+            },
+            { rootMargin: '200px' } // Pre-load 200px before scrolling into view
+        );
+
+        observer.observe(el);
+
+        return () => {
+            observer.disconnect();
+            if (activeUrlRef.current) {
+                URL.revokeObjectURL(activeUrlRef.current);
+                activeUrlRef.current = null;
             }
         };
+    }, []);
 
-        loadPreview();
+    // Resolve file and manage Blob URL lifetime strictly tied to viewport visibility
+    useEffect(() => {
+        let isMounted = true;
+
+        if (isVisible) {
+            const loadPreview = async () => {
+                try {
+                    let file = null;
+                    if (rootHandle && record?.relativePath) {
+                        file = await resolveFileByPath(rootHandle, record.relativePath);
+                    } else if (fileItem?.handle) {
+                        file = await getFileFromHandle(fileItem.handle);
+                    }
+
+                    if (!file || !isMounted) return;
+
+                    // Revoke old URL if any
+                    if (activeUrlRef.current) {
+                        URL.revokeObjectURL(activeUrlRef.current);
+                    }
+
+                    const createdUrl = URL.createObjectURL(file);
+                    activeUrlRef.current = createdUrl;
+                    setImgUrl(createdUrl);
+                } catch (err) {
+                    console.warn('Could not load thumbnail for:', displayName, err);
+                }
+            };
+
+            loadPreview();
+        } else {
+            // Off-screen: revoke Blob URL immediately to free memory
+            if (activeUrlRef.current) {
+                URL.revokeObjectURL(activeUrlRef.current);
+                activeUrlRef.current = null;
+                setImgUrl(null);
+            }
+        }
 
         return () => {
             isMounted = false;
-            if (createdUrl) URL.revokeObjectURL(createdUrl);
         };
-    }, [fileItem]);
+    }, [isVisible, record?.relativePath, rootHandle, fileItem]);
 
     return (
-        <div style={{
-            backgroundColor: 'var(--bg-surface)',
-            border: '1px solid var(--border-color)',
-            borderRadius: 'var(--radius)',
-            overflow: 'hidden',
-            display: 'flex',
-            flexDirection: 'column',
-            boxShadow: 'var(--shadow-subtle)'
-        }}>
+        <div
+            ref={cardRef}
+            style={{
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 'var(--radius)',
+                overflow: 'hidden',
+                display: 'flex',
+                flexDirection: 'column',
+                boxShadow: 'var(--shadow-subtle)',
+                minHeight: '260px'
+            }}
+        >
             <div style={{
                 width: '100%',
                 height: '180px',
@@ -88,15 +143,15 @@ function ThumbnailCard({ fileItem, record }) {
                 {imgUrl ? (
                     <img
                         src={imgUrl}
-                        alt={fileItem.name}
+                        alt={displayName}
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                         loading="lazy"
                     />
                 ) : (
-                    <span style={{ fontSize: '2rem' }}>🖼️</span>
+                    <span style={{ fontSize: '2rem', opacity: isVisible ? 0.6 : 0.2 }}>🖼️</span>
                 )}
             </div>
-            <div style={{ padding: '12px 14px' }}>
+            <div style={{ padding: '12px 14px', flex: 1, display: 'flex', flexDirection: 'column' }}>
                 <p style={{
                     fontSize: '0.85rem',
                     fontWeight: 600,
@@ -104,8 +159,8 @@ function ThumbnailCard({ fileItem, record }) {
                     whiteSpace: 'nowrap',
                     overflow: 'hidden',
                     textOverflow: 'ellipsis'
-                }} title={fileItem.name}>
-                    {fileItem.name}
+                }} title={displayName}>
+                    {displayName}
                 </p>
                 <p style={{
                     fontSize: '0.75rem',
@@ -115,10 +170,10 @@ function ThumbnailCard({ fileItem, record }) {
                     textOverflow: 'ellipsis',
                     marginTop: '2px'
                 }}>
-                    {fileItem.path}
+                    {displayPath}
                 </p>
 
-                {/* Phase 14: In-Browser AI Caption & Keyword Tags */}
+                {/* AI Caption & Keyword Tags */}
                 {record?.caption && (
                     <p style={{
                         fontSize: '0.78rem',
@@ -152,55 +207,102 @@ function ThumbnailCard({ fileItem, record }) {
                     </div>
                 )}
 
-                {record && (
-                    <div style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        marginTop: '8px',
-                        paddingTop: '8px',
-                        borderTop: '1px solid #f1f5f9',
-                        fontSize: '0.72rem',
-                        color: 'var(--text-muted)'
+                <div style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    marginTop: 'auto',
+                    paddingTop: '8px',
+                    borderTop: '1px solid #f1f5f9',
+                    fontSize: '0.72rem',
+                    color: 'var(--text-muted)'
+                }}>
+                    <span>{formatSize(displaySize)}</span>
+                    <span style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        padding: '2px 6px',
+                        borderRadius: '4px',
+                        backgroundColor: record?.indexingStatus === 'indexed' ? '#ecfdf5' : '#fffbeb',
+                        color: record?.indexingStatus === 'indexed' ? '#059669' : '#b45309',
+                        border: `1px solid ${record?.indexingStatus === 'indexed' ? '#a7f3d0' : '#fde68a'}`
                     }}>
-                        <span>{formatSize(record.size)}</span>
-                        <span style={{
-                            fontSize: '0.68rem',
-                            fontWeight: 600,
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            backgroundColor: record.indexingStatus === 'indexed' ? '#ecfdf5' : '#fffbeb',
-                            color: record.indexingStatus === 'indexed' ? '#059669' : '#b45309',
-                            border: `1px solid ${record.indexingStatus === 'indexed' ? '#a7f3d0' : '#fde68a'}`
-                        }}>
-                            {record.indexingStatus === 'indexed' ? '✨ Indexed' : '⏳ Pending AI'}
-                        </span>
-                    </div>
-                )}
+                        {record?.indexingStatus === 'indexed' ? '✨ Indexed' : (record ? '⏳ Pending AI' : 'Ready')}
+                    </span>
+                </div>
             </div>
         </div>
     );
 }
 
-export default function GalleryGrid({ entries, flatFiles, imageRecords = [], searchQuery = '' }) {
+export default function GalleryGrid({
+    entries = [],
+    flatFiles = [],
+    imageRecords = [],
+    rootHandle = null,
+    searchQuery = ''
+}) {
     const [viewMode, setViewMode] = useState('grid');
+    const [visibleCount, setVisibleCount] = useState(60);
+    const sentinelRef = useRef(null);
 
+    // Build unified item list: prefer imageRecords (lightweight DB models), fallback to flatFiles
     const recordMap = new Map(imageRecords.map(r => [r.relativePath, r]));
 
-    const filteredFiles = searchQuery
-        ? flatFiles.filter(f => {
+    const sourceItems = imageRecords.length > 0
+        ? imageRecords.map(rec => ({
+            id: rec.id || rec.relativePath,
+            record: rec,
+            fileItem: null,
+            name: rec.fileName || rec.relativePath,
+            path: rec.relativePath
+        }))
+        : flatFiles.map((file, idx) => ({
+            id: file.path || idx,
+            record: recordMap.get(file.path),
+            fileItem: file,
+            name: file.name,
+            path: file.path
+        }));
+
+    // Filter items based on user search query
+    const filteredItems = searchQuery
+        ? sourceItems.filter(item => {
             const query = searchQuery.toLowerCase();
-            const rec = recordMap.get(f.path);
-            const matchesName = f.name.toLowerCase().includes(query) || f.path.toLowerCase().includes(query);
-            const matchesCaption = rec?.caption?.toLowerCase().includes(query);
-            const matchesKeywords = rec?.keywords?.some(k => k.toLowerCase().includes(query));
+            const matchesName = item.name.toLowerCase().includes(query) || item.path.toLowerCase().includes(query);
+            const matchesCaption = item.record?.caption?.toLowerCase().includes(query);
+            const matchesKeywords = item.record?.keywords?.some(k => k.toLowerCase().includes(query));
             return matchesName || matchesCaption || matchesKeywords;
         })
-        : flatFiles;
+        : sourceItems;
+
+    // Windowed slice of items currently rendered in DOM
+    const visibleItems = filteredItems.slice(0, visibleCount);
+
+    // Sentinel observer to load next batch when scrolling near bottom
+    useEffect(() => {
+        const sentinel = sentinelRef.current;
+        if (!sentinel) return;
+
+        const observer = new IntersectionObserver(([entry]) => {
+            if (entry.isIntersecting) {
+                setVisibleCount(prev => Math.min(prev + 60, filteredItems.length));
+            }
+        }, { rootMargin: '400px' });
+
+        observer.observe(sentinel);
+
+        return () => observer.disconnect();
+    }, [filteredItems.length]);
+
+    // Reset pagination when search query or source items change significantly
+    useEffect(() => {
+        setVisibleCount(60);
+    }, [searchQuery, filteredItems.length]);
 
     return (
         <div>
-            {/* View Switcher */}
+            {/* View Switcher & Counter */}
             <div style={{
                 display: 'flex',
                 alignItems: 'center',
@@ -226,7 +328,8 @@ export default function GalleryGrid({ entries, flatFiles, imageRecords = [], sea
                     </button>
                 </div>
                 <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                    {flatFiles.length} file{flatFiles.length === 1 ? '' : 's'} detected
+                    {filteredItems.length} photo{filteredItems.length === 1 ? '' : 's'}
+                    {filteredItems.length > visibleCount && ` (showing ${visibleItems.length})`}
                 </span>
             </div>
 
@@ -253,26 +356,44 @@ export default function GalleryGrid({ entries, flatFiles, imageRecords = [], sea
                     )}
                 </div>
             ) : (
-                /* Image thumbnail grid view */
+                /* Virtualized image thumbnail grid view */
                 <div>
-                    {filteredFiles.length === 0 ? (
+                    {filteredItems.length === 0 ? (
                         <p style={{ color: 'var(--text-muted)', fontSize: '0.9rem', textAlign: 'center', padding: '40px 0' }}>
-                            No files found.
+                            No photos found.
                         </p>
                     ) : (
-                        <div style={{
-                            display: 'grid',
-                            gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
-                            gap: '16px'
-                        }}>
-                            {filteredFiles.map((file, idx) => (
-                                <ThumbnailCard
-                                    key={file.path || idx}
-                                    fileItem={file}
-                                    record={recordMap.get(file.path)}
-                                />
-                            ))}
-                        </div>
+                        <>
+                            <div style={{
+                                display: 'grid',
+                                gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+                                gap: '16px'
+                            }}>
+                                {visibleItems.map(item => (
+                                    <ThumbnailCard
+                                        key={item.id}
+                                        record={item.record}
+                                        fileItem={item.fileItem}
+                                        rootHandle={rootHandle}
+                                    />
+                                ))}
+                            </div>
+
+                            {/* Sentinel for infinite scroll pagination */}
+                            {visibleCount < filteredItems.length && (
+                                <div
+                                    ref={sentinelRef}
+                                    style={{
+                                        textAlign: 'center',
+                                        padding: '24px 0',
+                                        color: 'var(--text-muted)',
+                                        fontSize: '0.85rem'
+                                    }}
+                                >
+                                    Loading more photos...
+                                </div>
+                            )}
+                        </>
                     )}
                 </div>
             )}

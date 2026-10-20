@@ -391,6 +391,7 @@ export async function updateImageAI(imageId, { caption, keywords, embedding = nu
                     keywords: keywords || record.keywords || [],
                     embedding: embedding || record.embedding || null,
                     indexingStatus: 'indexed',
+                    processingStartedAt: null,
                     indexedAt: Date.now()
                 };
 
@@ -406,4 +407,163 @@ export async function updateImageAI(imageId, { caption, keywords, embedding = nu
         return false;
     }
 }
+
+/**
+ * High-performance count query using IndexedDB IDBIndex.count()
+ * Returns total photos in microseconds without loading objects into memory.
+ *
+ * @param {string} folderId
+ * @returns {Promise<number>}
+ */
+export async function getImagesCountByFolder(folderId) {
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readonly');
+            const index = tx.objectStore(IMAGES_STORE).index('folderId');
+            const req = index.count(folderId);
+            req.onsuccess = () => resolve(req.result || 0);
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error counting images by folder:', error);
+        return 0;
+    }
+}
+
+/**
+ * Windowed pagination query using IDB cursors.
+ * Loads only a visible slice (e.g. 60 items) rather than holding 50,000 photos in React state.
+ *
+ * @param {string|null} folderId - Optional folder filter
+ * @param {number} offset - Number of records to skip
+ * @param {number} limit - Maximum number of records to return
+ * @returns {Promise<Array>}
+ */
+export async function getImagesPaged(folderId = null, offset = 0, limit = 60) {
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readonly');
+            const store = tx.objectStore(IMAGES_STORE);
+            const source = folderId ? store.index('folderId') : store;
+            const range = folderId ? IDBKeyRange.only(folderId) : null;
+            const req = source.openCursor(range);
+
+            const results = [];
+            let advanced = false;
+
+            req.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (!cursor) {
+                    resolve(results);
+                    return;
+                }
+
+                if (offset > 0 && !advanced) {
+                    advanced = true;
+                    cursor.advance(offset);
+                    return;
+                }
+
+                const rec = cursor.value;
+                if (rec.status === 'available') {
+                    results.push(rec);
+                }
+
+                if (results.length < limit) {
+                    cursor.continue();
+                } else {
+                    resolve(results);
+                }
+            };
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error getting paged images:', error);
+        return [];
+    }
+}
+
+/**
+ * Resets any image stuck in 'processing' state back to 'pending'
+ * (e.g. if the user closed the tab mid-inference). Prevents orphaned jobs.
+ *
+ * @param {number} maxAgeMs - Maximum allowed processing age before resetting (default: 2 mins)
+ * @returns {Promise<number>} Count of reset records
+ */
+export async function resetStaleProcessingImages(maxAgeMs = 120000) {
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readwrite');
+            const store = tx.objectStore(IMAGES_STORE);
+            const req = store.openCursor();
+            let count = 0;
+            const now = Date.now();
+
+            req.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (!cursor) {
+                    resolve(count);
+                    return;
+                }
+                const record = cursor.value;
+                if (record.indexingStatus === 'processing') {
+                    const started = record.processingStartedAt || 0;
+                    if (now - started > maxAgeMs) {
+                        record.indexingStatus = 'pending';
+                        record.processingStartedAt = null;
+                        record.retryCount = (record.retryCount || 0) + 1;
+                        cursor.update(record);
+                        count++;
+                    }
+                }
+                cursor.continue();
+            };
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error resetting stale processing images:', error);
+        return 0;
+    }
+}
+
+/**
+ * Atomically claims the next pending image for background AI worker processing.
+ *
+ * @returns {Promise<Object|null>}
+ */
+export async function claimNextPendingImage() {
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readwrite');
+            const store = tx.objectStore(IMAGES_STORE);
+            const req = store.openCursor();
+
+            req.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (!cursor) {
+                    resolve(null);
+                    return;
+                }
+                const record = cursor.value;
+                if (record.indexingStatus === 'pending' && record.status === 'available') {
+                    record.indexingStatus = 'processing';
+                    record.processingStartedAt = Date.now();
+                    cursor.update(record);
+                    resolve(record);
+                    return;
+                }
+                cursor.continue();
+            };
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error claiming pending image:', error);
+        return null;
+    }
+}
+
 

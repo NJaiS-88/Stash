@@ -13,6 +13,10 @@ export default function Gallery() {
         selectFolder,
         addFolder,
         removeFolder,
+        indexingState,
+        isAIPaused,
+        pauseAIIndexing,
+        resumeAIIndexing,
         loading,
         error
     } = useGallery();
@@ -85,6 +89,67 @@ export default function Gallery() {
                                     <h2 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                                         {activeFolder.name}
                                     </h2>
+
+                                    {/* Real-time AI Indexing Status Badge */}
+                                    {indexingState?.isIndexing && (
+                                        <div style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '6px',
+                                            backgroundColor: '#eff6ff',
+                                            border: '1px solid #bfdbfe',
+                                            borderRadius: '20px',
+                                            padding: '3px 10px',
+                                            fontSize: '0.75rem',
+                                            color: '#1d4ed8'
+                                        }}>
+                                            <span style={{ fontWeight: 600 }}>AI: {indexingState.current}/{indexingState.total}</span>
+                                            <button
+                                                onClick={pauseAIIndexing}
+                                                style={{
+                                                    background: 'none',
+                                                    border: 'none',
+                                                    cursor: 'pointer',
+                                                    color: '#2563eb',
+                                                    textDecoration: 'underline',
+                                                    fontSize: '0.72rem',
+                                                    padding: 0
+                                                }}
+                                            >
+                                                Pause
+                                            </button>
+                                        </div>
+                                    )}
+
+                                    {isAIPaused && (
+                                        <div style={{
+                                            display: 'flex',
+                                            alignItems: 'center',
+                                            gap: '6px',
+                                            backgroundColor: '#fffbeb',
+                                            border: '1px solid #fde68a',
+                                            borderRadius: '20px',
+                                            padding: '3px 10px',
+                                            fontSize: '0.75rem',
+                                            color: '#b45309'
+                                        }}>
+                                            <span>⏸ Paused</span>
+                                            <button
+                                                onClick={resumeAIIndexing}
+                                                style={{
+                                                    background: 'none',
+                                                    border: 'none',
+                                                    cursor: 'pointer',
+                                                    color: '#b45309',
+                                                    textDecoration: 'underline',
+                                                    fontSize: '0.72rem',
+                                                    padding: 0
+                                                }}
+                                            >
+                                                Resume
+                                            </button>
+                                        </div>
+                                    )}
                                 </div>
                                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
                                     🔒 Local files only — never uploaded to any server.
@@ -150,12 +215,13 @@ export default function Gallery() {
                                 <GallerySearch
                                     searchQuery={searchQuery}
                                     setSearchQuery={setSearchQuery}
-                                    totalItems={activeFolder.flatFiles?.length || 0}
+                                    totalItems={activeFolder.imageRecords?.length || activeFolder.fileCount || 0}
                                 />
                                 <GalleryGrid
                                     entries={activeFolder.entries || []}
                                     flatFiles={activeFolder.flatFiles || []}
                                     imageRecords={activeFolder.imageRecords || []}
+                                    rootHandle={activeFolder.handle}
                                     searchQuery={searchQuery}
                                 />
                             </>

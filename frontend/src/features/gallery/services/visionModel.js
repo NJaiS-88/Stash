@@ -1,10 +1,11 @@
 /**
- * Phase 14: Browser Vision Model (100% Client-Side Privacy Engine).
- * Runs lightweight vision models directly inside the browser using WebAssembly.
- * Local image bytes and pixels NEVER leave the client or touch Express.
+ * Browser Vision Model (100% Client-Side Privacy Engine).
+ * Runs Microsoft's Florence-2-base-ft directly in browser using WebGPU/WASM.
+ * Local image bytes and pixels NEVER leave the client or touch any server.
  */
 
 let captionPipeline = null;
+let activeDevice = 'wasm';
 let initPromise = null;
 
 const STOP_WORDS = new Set([
@@ -14,17 +15,37 @@ const STOP_WORDS = new Set([
 ]);
 
 /**
- * Dynamically imports Transformers.js at runtime using browser ESM.
+ * Dynamically imports Transformers.js v3 at runtime using browser ESM.
  * Uses /* @vite-ignore *\/ to prevent Vite from failing static import analysis.
  */
 async function loadTransformersModule() {
-    const cdnUrl = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2';
+    const cdnUrl = 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.3.3';
     return await import(/* @vite-ignore */ cdnUrl);
+}
+
+function parseFlorenceCaption(output) {
+    let caption = '';
+    if (!output) return '';
+
+    if (typeof output === 'string') {
+        caption = output;
+    } else if (Array.isArray(output) && output.length > 0) {
+        const item = output[0]?.generated_text !== undefined ? output[0].generated_text : output[0];
+        if (typeof item === 'object' && item !== null) {
+            caption = item['<MORE_DETAILED_CAPTION>'] || item['<DETAILED_CAPTION>'] || item['<CAPTION>'] || Object.values(item)[0] || '';
+        } else if (typeof item === 'string') {
+            caption = item;
+        }
+    } else if (typeof output === 'object') {
+        caption = output['<MORE_DETAILED_CAPTION>'] || output['<DETAILED_CAPTION>'] || output['<CAPTION>'] || Object.values(output)[0] || '';
+    }
+
+    return String(caption).replace(/<[^>]+>/g, '').trim();
 }
 
 /**
  * Initializes and caches the client-side vision captioning pipeline.
- * Model weights are cached locally in the browser's CacheStorage.
+ * Tries WebGPU with mixed precision (FP16 vision + Q4 decoder), falling back to WASM.
  *
  * @param {Function|null} onProgress - Progress callback for model download
  * @returns {Promise<Function>} Captioning pipeline
@@ -35,18 +56,37 @@ export async function getVisionPipeline(onProgress = null) {
 
     initPromise = (async () => {
         try {
+            const hasWebGPU = typeof navigator !== 'undefined' && 'gpu' in navigator;
+            activeDevice = hasWebGPU ? 'webgpu' : 'wasm';
+
             const { pipeline, env } = await loadTransformersModule();
 
-            // Configure browser cache & remote fetch
             if (env) {
                 env.allowLocalModels = false;
                 env.useBrowserCache = true;
             }
 
-            // Lightweight, quantized in-browser vision captioner (~60MB, fast inference)
-            captionPipeline = await pipeline('image-to-text', 'Xenova/vit-gpt2-image-captioning', {
-                progress_callback: onProgress
-            });
+            const modelId = 'onnx-community/Florence-2-base-ft';
+
+            try {
+                captionPipeline = await pipeline('image-text-to-text', modelId, {
+                    device: activeDevice,
+                    dtype: hasWebGPU ? {
+                        embed_tokens: 'fp16',
+                        vision_encoder: 'fp16',
+                        encoder_model: 'q4',
+                        decoder_model_merged: 'q4',
+                    } : 'q4',
+                    progress_callback: onProgress
+                });
+            } catch (florenceErr) {
+                console.warn('Florence-2 WebGPU init failed, falling back to WASM / vit-gpt2:', florenceErr);
+                activeDevice = 'wasm';
+                captionPipeline = await pipeline('image-to-text', 'Xenova/vit-gpt2-image-captioning', {
+                    device: 'wasm',
+                    progress_callback: onProgress
+                });
+            }
 
             return captionPipeline;
         } catch (err) {
@@ -75,8 +115,7 @@ export function extractKeywords(caption) {
 }
 
 /**
- * Runs in-browser visual inference on a local image File or Blob.
- * Ephemeral object URLs are cleaned up immediately after inference.
+ * Runs in-browser visual inference on a local image File or Blob using Florence-2.
  *
  * @param {File|Blob} file - Local image file object
  * @param {Function|null} onModelProgress - Optional model download progress callback
@@ -90,28 +129,21 @@ export async function describeImage(file, onModelProgress = null) {
         const pipe = await getVisionPipeline(onModelProgress);
         objectUrl = URL.createObjectURL(file);
 
-        // Run inference entirely inside client WebAssembly runtime
+        // Run Florence-2 with <MORE_DETAILED_CAPTION> prompt
         const output = await pipe(objectUrl, {
-            max_new_tokens: 30
+            text: '<MORE_DETAILED_CAPTION>',
+            max_new_tokens: 100
         });
 
-        let rawCaption = '';
-        if (Array.isArray(output) && output.length > 0) {
-            rawCaption = output[0]?.generated_text || '';
-        } else if (typeof output === 'string') {
-            rawCaption = output;
-        }
-
-        const caption = rawCaption.trim();
+        const caption = parseFlorenceCaption(output) || (file.name ? `Photo: ${file.name}` : 'Local image');
         const keywords = extractKeywords(caption);
 
         return {
             caption,
-            keywords
+            keywords: keywords.length > 0 ? keywords : extractKeywords(file.name || '')
         };
     } catch (err) {
         console.warn('Vision model inference error:', err);
-        // Fallback: derive keywords from filename so indexing doesn't fail completely
         const fallbackKeywords = extractKeywords(file.name || '');
         return {
             caption: file.name ? `Photo of ${file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ')}` : 'Local image',
