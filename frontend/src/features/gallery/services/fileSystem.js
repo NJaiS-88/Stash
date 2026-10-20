@@ -165,7 +165,8 @@ export async function streamDirectoryFiles(dirHandle, onBatch, batchSize = 100, 
                             path: entryPath,
                             size: file.size,
                             lastModified: file.lastModified,
-                            handle: entry
+                            handle: entry,
+                            isImage: true
                         });
                         totalCount++;
 

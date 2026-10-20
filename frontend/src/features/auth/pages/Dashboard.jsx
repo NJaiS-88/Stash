@@ -174,28 +174,11 @@ const Dashboard = () => {
                                             borderColor: '#bfdbfe',
                                             fontWeight: 600
                                         }}
-                                        title="Resume background Florence-2 AI vision processing"
+                                        title="Resume background AI vision processing"
                                     >
                                         ▶ Resume AI
                                     </button>
-                                ) : (
-                                    <button
-                                        onClick={handleRunAI}
-                                        disabled={loading || scanning}
-                                        className="btn-logout"
-                                        style={{
-                                            padding: '10px 18px',
-                                            fontSize: '0.9rem',
-                                            backgroundColor: '#f5f3ff',
-                                            color: '#6d28d9',
-                                            borderColor: '#ddd6fe',
-                                            fontWeight: 600
-                                        }}
-                                        title="Analyze unindexed photos with Florence-2 Vision AI (WebGPU/WASM accelerated)"
-                                    >
-                                        ⚡ Run Florence-2 AI
-                                    </button>
-                                )}
+                                ) : null}
 
                                 <button
                                     onClick={handleRescanAll}

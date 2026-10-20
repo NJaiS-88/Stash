@@ -47,23 +47,35 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
  * Preserves permanent imageId even across renames or moves.
  *
  * @param {Array} flatFiles
- * @param {string} folderId
- * @param {Array} existingRecords
- * @returns {Promise<Array>}
- */
+const IMAGE_EXTENSIONS = new Set([
+    'jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'bmp', 'avif', 'heic', 'tiff'
+]);
+
+function checkIsImage(fileName) {
+    if (!fileName) return false;
+    const ext = fileName.split('.').pop()?.toLowerCase();
+    return IMAGE_EXTENSIONS.has(ext);
+}
+
 export async function buildImageRegistryForFolder(flatFiles, folderId, existingRecords = []) {
-    const imageFiles = flatFiles.filter(f => f.isImage && f.handle);
+    const imageFiles = flatFiles.filter(f => (f.isImage || checkIsImage(f.name)) && f.handle);
     const discoveredFiles = [];
 
     for (const fileItem of imageFiles) {
         try {
-            const file = await fileItem.handle.getFile();
+            let size = fileItem.size;
+            let lastModified = fileItem.lastModified;
+            if (size === undefined || lastModified === undefined) {
+                const file = await fileItem.handle.getFile();
+                size = file.size;
+                lastModified = file.lastModified;
+            }
             discoveredFiles.push({
                 fileItem,
                 path: fileItem.path,
                 name: fileItem.name,
-                size: file.size,
-                lastModified: file.lastModified
+                size,
+                lastModified
             });
         } catch (err) {
             console.warn('Could not read metadata for:', fileItem.name, err);

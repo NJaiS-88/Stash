@@ -33,7 +33,7 @@ export const GalleryProvider = ({ children }) => {
                     // 3. Check for any pending photos across all folders
                     const pending = await getPendingImages();
                     if (pending && pending.length > 0) {
-                        console.log(`[Stash AI Daemon] Auto-starting background Florence-2 inference for ${pending.length} unindexed photos...`);
+                        console.log(`[Stash AI Daemon] Auto-starting background AI inference for ${pending.length} unindexed photos...`);
                         visionQueue.start(savedFolders);
                     } else {
                         console.log('[Stash AI Daemon] All connected photos are already indexed.');
