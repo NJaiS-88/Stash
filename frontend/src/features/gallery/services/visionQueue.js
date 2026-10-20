@@ -11,7 +11,8 @@ import {
     getPendingImages,
     getAllFolders,
     resetStaleProcessingImages,
-    saveImageRecord
+    saveImageRecord,
+    markBrowserCaptionsForUpgrade
 } from './galleryDb';
 import { resolveFileByPath } from './fileSystem';
 import { describeImage } from './visionModel';
@@ -123,6 +124,11 @@ class VisionQueueManager {
             this.status.activeEngine = 'local';
             this.status.activeModel = localHealth.model || 'Qwen3-VL-8B-Instruct';
             console.log('[VisionQueue] Preferred Tier 1 Active: Stash Local AI (Qwen3-VL-8B)');
+            // Automatically upgrade any photos previously captioned by browser fallback
+            const upgraded = await markBrowserCaptionsForUpgrade();
+            if (upgraded > 0) {
+                console.log(`[VisionQueue] Re-queued ${upgraded} photos from browser fallback to upgrade to Qwen3-VL.`);
+            }
         } else {
             this.status.activeEngine = 'browser';
             this.status.activeModel = 'Florence-2-base-ft';
@@ -153,9 +159,39 @@ class VisionQueueManager {
         let processedCount = 0;
 
         while (this.isRunning && !this.isPaused) {
+            // Mid-queue hot promotion: If running in browser mode, periodically check if Local AI finished downloading
+            if (this.status.activeEngine === 'browser' && processedCount > 0 && processedCount % 2 === 0) {
+                const health = await checkLocalAiHealth();
+                if (health.available) {
+                    this.status.activeEngine = 'local';
+                    this.status.activeModel = health.model || 'Qwen3-VL-8B-Instruct';
+                    console.log('[VisionQueue] Local AI is now ready! Promoted active engine to Local Qwen3-VL.');
+                    const upgraded = await markBrowserCaptionsForUpgrade();
+                    if (upgraded > 0) {
+                        const refreshed = await getPendingImages();
+                        this.status.total = refreshed.length + processedCount;
+                    }
+                }
+            }
+
             // Claim next available pending image atomically
             const img = await claimNextPendingImage();
             if (!img) {
+                // If we ran in browser mode, check if local AI became ready to upgrade earlier images
+                if (this.status.activeEngine === 'browser') {
+                    const health = await checkLocalAiHealth();
+                    if (health.available) {
+                        this.status.activeEngine = 'local';
+                        this.status.activeModel = health.model || 'Qwen3-VL-8B-Instruct';
+                        const upgraded = await markBrowserCaptionsForUpgrade();
+                        if (upgraded > 0) {
+                            console.log(`[VisionQueue] Browser pass done. Upgrading ${upgraded} photos to Qwen3-VL.`);
+                            const refreshed = await getPendingImages();
+                            this.status.total = refreshed.length + processedCount;
+                            continue;
+                        }
+                    }
+                }
                 // No more pending images
                 break;
             }

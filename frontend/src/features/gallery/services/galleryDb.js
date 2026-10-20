@@ -383,6 +383,45 @@ export async function getPendingImages() {
 }
 
 /**
+ * Re-queues images that were captioned via browser fallback (Florence-2 / vit-gpt2)
+ * so they are automatically upgraded with superior Qwen3-VL local AI captions.
+ *
+ * @returns {Promise<number>} Number of images marked for upgrade
+ */
+export async function markBrowserCaptionsForUpgrade() {
+    try {
+        const db = await getDB();
+        const available = await getAvailableImages();
+        const browserImages = available.filter(img =>
+            img.captionEngine === 'browser' ||
+            img.captionModel === 'florence-2-base-ft' ||
+            img.captionModel === 'vit-gpt2'
+        );
+
+        if (browserImages.length === 0) return 0;
+
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readwrite');
+            const store = tx.objectStore(IMAGES_STORE);
+
+            for (const img of browserImages) {
+                store.put({
+                    ...img,
+                    captionStatus: 'pending',
+                    indexingStatus: 'pending'
+                });
+            }
+
+            tx.oncomplete = () => resolve(browserImages.length);
+            tx.onerror = () => reject(tx.error);
+        });
+    } catch (error) {
+        console.error('Error marking browser captions for upgrade:', error);
+        return 0;
+    }
+}
+
+/**
  * Updates an image record in IndexedDB with local or browser AI vision results.
  * Sets captionStatus to 'completed', cloudIndexStatus to 'pending',
  * and records caption provenance (engine, model, version).
