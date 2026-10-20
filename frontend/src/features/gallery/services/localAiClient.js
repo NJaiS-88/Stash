@@ -8,14 +8,14 @@ export const LOCAL_AI_DEFAULT_PORT = 48124;
 export const LOCAL_AI_BASE_URL = `http://127.0.0.1:${LOCAL_AI_DEFAULT_PORT}`;
 export const LOCAL_AI_SETUP_DOWNLOAD_URL = '/downloads/StashLocalAI-Setup.exe';
 
-export const SEARCH_RETRIEVAL_PROMPT = `Generate one concise but detailed factual caption for this image. Describe only clearly visible information useful for photo search:
-- people and approximate count
-- major objects
-- activity/action
-- scene/environment
-- important visible attributes
-- general time/weather if visually clear
-Do not identify unknown people. Do not speculate about relationships, exact location, events, emotions, or facts that are not visually evident. Return only the caption.`;
+export const SEARCH_RETRIEVAL_PROMPT = `Generate one concise, highly detailed factual caption for this image optimized for search retrieval.
+
+Describe all visible information accurately:
+- Image type & subjects: people, animals, landscapes, cityscapes, food, vehicles, objects, art, screenshots, documents, or UI.
+- Visible text/titles: transcribe key legible text, titles, brand names, or error messages (for screenshots, receipts, signs, or slides).
+- Context & attributes: activities, scene/setting, colors, lighting, materials, and layout.
+
+Do not speculate on hidden identities, unverified relationships, or unseen facts. Return only the caption.`;
 
 const STOP_WORDS = new Set([
     'a', 'an', 'the', 'in', 'on', 'at', 'is', 'are', 'was', 'were', 'it', 'its',

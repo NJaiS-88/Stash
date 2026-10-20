@@ -121,39 +121,66 @@ class ModelManager:
         filename = self.model_spec["filename"]
         mmproj_filename = self.model_spec.get("mmproj_filename")
 
+        def _safe_rename(src: Path, dst: Path, retries: int = 10, delay: float = 0.5):
+            """Safely renames a file on Windows handling antivirus locks and atomic replaces."""
+            import time
+            import gc
+            gc.collect()
+            for attempt in range(retries):
+                try:
+                    if dst.exists():
+                        try:
+                            dst.unlink()
+                        except Exception:
+                            pass
+                    os.replace(str(src), str(dst))
+                    return
+                except (PermissionError, OSError) as err:
+                    if attempt == retries - 1:
+                        raise err
+                    time.sleep(delay)
+
         def _download_single(fname: str, target: Path):
             temp_target = target.with_suffix(".download")
+
+            # If target already exists and is valid, skip
+            if target.exists() and target.stat().st_size > 50 * 1024 * 1024:
+                return
+
+            # If temp_target already finished downloading previously, safely rename it
+            if temp_target.exists() and temp_target.stat().st_size > 100 * 1024 * 1024:
+                logger.info(f"Existing completed download found for {fname}, promoting to target...")
+                _safe_rename(temp_target, target)
+                return
+
             url = f"https://huggingface.co/{repo_id}/resolve/main/{fname}?download=true"
             logger.info(f"Downloading {fname} from {url} to {temp_target}...")
             req = urllib.request.Request(
                 url,
                 headers={"User-Agent": "StashLocalAI/1.0.0"}
             )
-            with urllib.request.urlopen(req) as response, open(temp_target, "wb") as out_file:
+            with urllib.request.urlopen(req) as response:
                 total_size = int(response.info().get("Content-Length", 0))
                 self.total_bytes = total_size
                 downloaded = 0
                 chunk_size = 1024 * 1024  # 1MB chunks
 
-                while True:
-                    chunk = response.read(chunk_size)
-                    if not chunk:
-                        break
-                    out_file.write(chunk)
-                    downloaded += len(chunk)
-                    self.downloaded_bytes = downloaded
+                with open(temp_target, "wb") as out_file:
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+                        downloaded += len(chunk)
+                        self.downloaded_bytes = downloaded
 
-                    if total_size > 0:
-                        self.download_progress = (downloaded / total_size) * 100.0
-                        if progress_callback:
-                            progress_callback(self.download_progress)
+                        if total_size > 0:
+                            self.download_progress = (downloaded / total_size) * 100.0
+                            if progress_callback:
+                                progress_callback(self.download_progress)
 
-            if target.exists():
-                try:
-                    target.unlink()
-                except Exception:
-                    pass
-            temp_target.rename(target)
+            # File handles are closed; atomic replace with retry for Windows lock release
+            _safe_rename(temp_target, target)
 
         def _download_worker():
             try:
