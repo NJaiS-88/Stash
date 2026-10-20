@@ -8,14 +8,7 @@ export const LOCAL_AI_DEFAULT_PORT = 48124;
 export const LOCAL_AI_BASE_URL = `http://127.0.0.1:${LOCAL_AI_DEFAULT_PORT}`;
 export const LOCAL_AI_SETUP_DOWNLOAD_URL = '/downloads/StashLocalAI-Setup.exe';
 
-export const SEARCH_RETRIEVAL_PROMPT = `Generate one concise, highly detailed factual caption for this image optimized for search retrieval.
-
-Describe all visible information accurately:
-- Image type & subjects: people, animals, landscapes, cityscapes, food, vehicles, objects, art, screenshots, documents, or UI.
-- Visible text/titles: transcribe key legible text, titles, brand names, or error messages (for screenshots, receipts, signs, or slides).
-- Context & attributes: activities, scene/setting, colors, lighting, materials, and layout.
-
-Do not speculate on hidden identities, unverified relationships, or unseen facts. Return only the caption.`;
+export const SEARCH_RETRIEVAL_PROMPT = 'Describe this image with key subjects, objects, legible text, and scene details for search retrieval. Concise and factual.';
 
 const STOP_WORDS = new Set([
     'a', 'an', 'the', 'in', 'on', 'at', 'is', 'are', 'was', 'were', 'it', 'its',
@@ -99,7 +92,7 @@ export async function requestLocalCaption(fileBlob, fileName = 'image.jpg', opti
     const formData = new FormData();
     formData.append('image', fileBlob, fileName);
     formData.append('prompt', options.prompt || SEARCH_RETRIEVAL_PROMPT);
-    formData.append('maxTokens', options.maxTokens || 120);
+    formData.append('maxTokens', options.maxTokens || 45);
 
     const res = await fetch(`${LOCAL_AI_BASE_URL}/caption`, {
         method: 'POST',

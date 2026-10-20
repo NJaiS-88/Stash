@@ -263,7 +263,8 @@ class ModelManager:
                             chat_handler = None
 
             # Determine hardware acceleration support
-            threads = max(1, (os.cpu_count() or 4) - 1)
+            cpu_cores = os.cpu_count() or 4
+            threads = max(2, min(8, cpu_cores - 1))
             can_try_gpu = False
             try:
                 import llama_cpp
@@ -281,7 +282,7 @@ class ModelManager:
                     self._llm = Llama(
                         model_path=str(self.model_path),
                         chat_handler=chat_handler,
-                        n_ctx=4096,
+                        n_ctx=2048,
                         logits_all=True,
                         n_threads=threads,
                         n_batch=512,
@@ -298,7 +299,7 @@ class ModelManager:
                 self._llm = Llama(
                     model_path=str(self.model_path),
                     chat_handler=chat_handler,
-                    n_ctx=4096,
+                    n_ctx=2048,
                     logits_all=True,
                     n_threads=threads,
                     n_batch=512,

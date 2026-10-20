@@ -59,16 +59,11 @@ SUPPORTED_MODELS = {
 
 ACTIVE_MODEL_KEY = "qwen3-vl-8b-instruct"
 
-# Universal retrieval-oriented caption prompt across all image types
-DEFAULT_RETRIEVAL_PROMPT = """Generate one concise, highly detailed factual caption for this image optimized for search retrieval.
-
-Describe all visible information accurately:
-- Image type & subjects: people, animals, landscapes, cityscapes, food, vehicles, objects, art, screenshots, documents, or UI.
-- Visible text/titles: transcribe key legible text, titles, brand names, or error messages (for screenshots, receipts, signs, or slides).
-- Context & attributes: activities, scene/setting, colors, lighting, materials, and layout.
-
-Do not speculate on hidden identities, unverified relationships, or unseen facts. Return only the caption."""
+# Compact high-speed retrieval prompt (minimizes token prefill on CPU)
+DEFAULT_RETRIEVAL_PROMPT = "Describe this image with key subjects, objects, legible text, and scene details for search retrieval. Concise and factual."
 
 # Image Preprocessing Settings
-MAX_IMAGE_DIMENSION: int = 896  # Fast, optimal size for Qwen-VL with low memory footprint
-JPEG_QUALITY: int = 88
+# 448px produces 4x fewer vision tokens than 896px, cutting CPU encode time by ~75%
+MAX_IMAGE_DIMENSION: int = 448
+JPEG_QUALITY: int = 85
+

@@ -81,10 +81,13 @@ async def generate_caption(
                     ]
                 }
             ]
+            # Cap max_tokens to 50 for rapid CPU generation (crisp search captions)
+            effective_max_tokens = min(max_tokens, 50) if max_tokens else 50
             response = llm.create_chat_completion(
                 messages=messages,
-                max_tokens=max_tokens,
-                temperature=0.2,
+                max_tokens=effective_max_tokens,
+                temperature=0.1,
+                stop=["\n\n", "\n", "User:", "<|im_end|>", "<|endoftext|>"]
             )
             caption_text = response["choices"][0]["message"]["content"].strip()
 
