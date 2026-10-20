@@ -8,6 +8,7 @@ import re
 import uuid
 import base64
 import asyncio
+import hashlib
 import logging
 from typing import Dict, Any, List, Optional
 from PIL import Image
@@ -20,6 +21,9 @@ logger = logging.getLogger("stash-local-ai.captioner")
 
 # Strict Concurrency = 1 semaphore
 INFERENCE_SEMAPHORE = asyncio.Semaphore(1)
+
+# In-memory SHA-256 caption cache: prevents re-running model on identical images
+CAPTION_CACHE: Dict[str, Dict[str, Any]] = {}
 
 # Default Stopwords for Keyword Extraction
 STOP_WORDS = {
@@ -55,6 +59,14 @@ async def generate_caption(
     """
     final_image_id = image_id or str(uuid.uuid4())
     final_prompt = prompt or DEFAULT_RETRIEVAL_PROMPT
+
+    # Fast SHA-256 hash cache: instant 0ms return if image was ever captioned before
+    img_hash = hashlib.sha256(image_bytes).hexdigest()
+    if img_hash in CAPTION_CACHE:
+        logger.info(f"⚡ Instant Hash Cache Match ({img_hash[:10]}...): Reusing existing caption without re-running model!")
+        cached = CAPTION_CACHE[img_hash].copy()
+        cached["imageId"] = final_image_id
+        return cached
 
     # Enforce concurrency = 1
     async with INFERENCE_SEMAPHORE:
@@ -103,7 +115,7 @@ async def generate_caption(
             logger.info(f"✅ Generated: \"{caption_text}\"")
             keywords = extract_keywords(caption_text)
 
-            return {
+            result = {
                 "imageId": final_image_id,
                 "caption": caption_text,
                 "keywords": keywords,
@@ -111,6 +123,8 @@ async def generate_caption(
                 "model": ACTIVE_MODEL_KEY,
                 "captionVersion": 1
             }
+            CAPTION_CACHE[img_hash] = result.copy()
+            return result
 
         finally:
             model_mgr._is_busy = False

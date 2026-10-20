@@ -258,6 +258,36 @@ export async function findDuplicateImages() {
 }
 
 /**
+ * Looks up any existing image record sharing the same SHA-256 contentHash that already has a valid caption.
+ * Enables instant zero-cost caption reuse for duplicated, renamed, or re-uploaded photos.
+ *
+ * @param {string} contentHash - SHA-256 hash string
+ * @returns {Promise<Object|null>} Existing image record with caption, or null
+ */
+export async function getExistingCaptionByContentHash(contentHash) {
+    if (!contentHash) return null;
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readonly');
+            const store = tx.objectStore(IMAGES_STORE);
+            const index = store.index('contentHash');
+            const req = index.getAll(contentHash);
+            req.onsuccess = () => {
+                const results = req.result || [];
+                const match = results.find(img => img.caption && typeof img.caption === 'string' && img.caption.trim().length > 0);
+                resolve(match || null);
+            };
+            req.onerror = () => reject(req.error);
+        });
+    } catch (error) {
+        console.error('Error finding caption by contentHash:', error);
+        return null;
+    }
+}
+
+
+/**
  * Retrieves all images matching a specific status ('available' or 'missing').
  *
  * @param {'available'|'missing'} status

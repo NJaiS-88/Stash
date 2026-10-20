@@ -12,7 +12,8 @@ import {
     getAllFolders,
     resetStaleProcessingImages,
     saveImageRecord,
-    markBrowserCaptionsForUpgrade
+    markBrowserCaptionsForUpgrade,
+    getExistingCaptionByContentHash
 } from './galleryDb';
 import { resolveFileByPath } from './fileSystem';
 import { describeImage } from './visionModel';
@@ -255,8 +256,23 @@ class VisionQueueManager {
 
                 let result = null;
 
+                // ---------------- STEP 0: INSTANT HASH DEDUPLICATION ----------------
+                // If this image shares the same SHA-256 hash as an already-captioned image, reuse it in 0ms!
+                if (img.contentHash) {
+                    const existingMatch = await getExistingCaptionByContentHash(img.contentHash);
+                    if (existingMatch && existingMatch.caption && existingMatch.imageId !== img.imageId) {
+                        console.log(`[VisionQueue] ⚡ Instant Hash Reuse for ${img.fileName}: Reusing existing caption from ${existingMatch.fileName}`);
+                        result = {
+                            caption: existingMatch.caption,
+                            keywords: existingMatch.keywords || [],
+                            engine: existingMatch.captionEngine || existingMatch.engine || 'local',
+                            model: existingMatch.captionModel || existingMatch.model || 'qwen3-vl-8b-instruct'
+                        };
+                    }
+                }
+
                 // ---------------- TIER 1: STASH LOCAL AI ----------------
-                if (this.status.activeEngine === 'local') {
+                if (!result && this.status.activeEngine === 'local') {
                     try {
                         const localRes = await requestLocalCaption(file, img.fileName);
                         result = {

@@ -406,19 +406,49 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
         const hash = item.contentHash || await computeFileHash(item.file);
         const fingerprint = hash ? await computeFingerprint(hash) : null;
 
-        created.push({
-            imageId: crypto.randomUUID(), // Brand-new identity
-            folderId: item.folderId,
-            relativePath: item.relativePath,
-            fileName: item.fileName,
-            size: item.size,
-            lastModified: item.lastModified,
-            contentHash: hash,
-            fingerprint,
-            status: "available",
-            missingSince: null,
-            indexingStatus: "pending"
-        });
+        // Check if ANY existing image in the database already has this exact hash and is captioned!
+        const existingCaptioned = allExistingRecords.find(r =>
+            r.contentHash && r.contentHash === hash && r.caption && r.caption.trim().length > 0
+        ) || created.find(r =>
+            r.contentHash && r.contentHash === hash && r.caption && r.caption.trim().length > 0
+        );
+
+        if (existingCaptioned) {
+            // Instant zero-compute reuse: identical photo already has an AI caption!
+            created.push({
+                imageId: crypto.randomUUID(),
+                folderId: item.folderId,
+                relativePath: item.relativePath,
+                fileName: item.fileName,
+                size: item.size,
+                lastModified: item.lastModified,
+                contentHash: hash,
+                fingerprint,
+                status: "available",
+                missingSince: null,
+                caption: existingCaptioned.caption,
+                keywords: existingCaptioned.keywords || [],
+                captionEngine: existingCaptioned.captionEngine || existingCaptioned.engine || 'local',
+                captionModel: existingCaptioned.captionModel || existingCaptioned.model || 'qwen3-vl-8b-instruct',
+                captionVersion: existingCaptioned.captionVersion || 1,
+                captionStatus: "complete",
+                indexingStatus: "complete"
+            });
+        } else {
+            created.push({
+                imageId: crypto.randomUUID(), // Brand-new identity
+                folderId: item.folderId,
+                relativePath: item.relativePath,
+                fileName: item.fileName,
+                size: item.size,
+                lastModified: item.lastModified,
+                contentHash: hash,
+                fingerprint,
+                status: "available",
+                missingSince: null,
+                indexingStatus: "pending"
+            });
+        }
     }
 
     // =========================================================================
