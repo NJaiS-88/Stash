@@ -5,6 +5,15 @@ Coordinates security middleware, model manager, and inference routes.
 """
 
 import sys
+import os
+
+# Crucial fix for windowless Windows executables (PyInstaller console=False):
+# In windowless mode, sys.stdout and sys.stderr are None, causing uvicorn logger to crash on .isatty()
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, "w", encoding="utf-8")
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, "w", encoding="utf-8")
+
 import logging
 from pathlib import Path
 from contextlib import asynccontextmanager
@@ -76,11 +85,20 @@ app.include_router(caption_router)
 
 
 if __name__ == "__main__":
+    # Prevent uvicorn from using color formatter when running windowless
+    log_config = uvicorn.config.LOGGING_CONFIG.copy()
+    if "formatters" in log_config:
+        if "default" in log_config["formatters"]:
+            log_config["formatters"]["default"]["use_colors"] = False
+        if "access" in log_config["formatters"]:
+            log_config["formatters"]["access"]["use_colors"] = False
+
     # STRICT: Loopback only (127.0.0.1)
     uvicorn.run(
         app,
         host=HOST,
         port=PORT,
         log_level="info",
+        log_config=log_config,
         access_log=False
     )
