@@ -4,6 +4,7 @@ import Navbar from '../../auth/components/Navbar';
 import ConnectFolder from '../components/ConnectFolder';
 import GalleryGrid from '../components/GalleryGrid';
 import GallerySearch from '../components/GallerySearch';
+import PrivateAiBanner from '../components/PrivateAiBanner';
 import { useGallery } from '../hooks/useGallery';
 
 export default function Gallery() {
@@ -29,6 +30,8 @@ export default function Gallery() {
             <Navbar />
 
             <main style={{ maxWidth: '1100px', margin: '32px auto', padding: '0 24px', width: '100%' }}>
+                <PrivateAiBanner />
+
                 {!activeFolder ? (
                     folders.length === 0 ? (
                         <ConnectFolder 

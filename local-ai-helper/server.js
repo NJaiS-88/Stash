@@ -1,11 +1,11 @@
 /**
- * Memora Local AI Helper Service
+ * Stash Local AI Helper Service
  * Loopback-only microservice (127.0.0.1:48124) providing native hardware acceleration
  * and Qwen3-VL-8B-Instruct inference for local photo search.
  *
  * Security Constraints:
  * 1. Binds STRICTLY to 127.0.0.1 (never 0.0.0.0 / external network interfaces).
- * 2. Origin-validated CORS (only Memora frontend can invoke endpoints).
+ * 2. Origin-validated CORS (only Stash frontend can invoke endpoints).
  * 3. Never reads arbitrary local file paths from disk (accepts only uploaded image buffers).
  * 4. Maximum payload size capped to prevent memory exhaustion attacks.
  */
@@ -174,7 +174,7 @@ const server = http.createServer(async (req, res) => {
                     durationMs: Date.now() - startTime
                 }));
             } catch (err) {
-                console.error('[Memora Local AI] Error processing caption:', err);
+                console.error('[Stash Local AI] Error processing caption:', err);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message || 'Inference error' }));
             }
@@ -189,6 +189,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, HOST, () => {
-    console.log(`[Memora Local AI Helper] Running strictly on http://${HOST}:${PORT}`);
-    console.log(`[Memora Local AI Helper] Security: Loopback only, origin restricted, zero cloud leakage.`);
+    console.log(`[Stash Local AI Helper] Running strictly on http://${HOST}:${PORT}`);
+    console.log(`[Stash Local AI Helper] Security: Loopback only, origin restricted, zero cloud leakage.`);
 });

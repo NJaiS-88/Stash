@@ -3,6 +3,7 @@ import Navbar from '../components/Navbar';
 import { useAuth } from '../hooks/useAuth';
 import { useGallery } from '../../gallery/hooks/useGallery';
 import { useNavigate } from 'react-router';
+import PrivateAiBanner from '../../gallery/components/PrivateAiBanner';
 
 const Dashboard = () => {
     const { user } = useAuth();
@@ -72,13 +73,13 @@ const Dashboard = () => {
     };
 
     const handleDeleteSingleMissing = async (imageId, fileName) => {
-        if (window.confirm(`Permanently remove "${fileName}" from Memora? This transitions it to DELETED state.`)) {
+        if (window.confirm(`Permanently remove "${fileName}" from Stash? This transitions it to DELETED state.`)) {
             await deleteMissingPhoto(imageId);
         }
     };
 
     const handlePurgeAll = async () => {
-        if (window.confirm(`Permanently remove all ${missingImages.length} missing photos from Memora? This will remove them from IndexedDB and schedule cloud/vector cleanup.`)) {
+        if (window.confirm(`Permanently remove all ${missingImages.length} missing photos from Stash? This will remove them from IndexedDB and schedule cloud/vector cleanup.`)) {
             setPurging(true);
             try {
                 await purgeAllMissing();
@@ -219,6 +220,8 @@ const Dashboard = () => {
                     </div>
                 </div>
 
+                <PrivateAiBanner />
+
                 {(indexingState.isIndexing || isAIPaused) && (
                     <div style={{
                         backgroundColor: isAIPaused ? '#fffbeb' : (indexingState.activeEngine === 'local' ? '#f0fdf4' : '#f5f3ff'),
@@ -238,7 +241,7 @@ const Dashboard = () => {
                                     {isAIPaused
                                         ? '⏸ AI Inference Paused'
                                         : (indexingState.activeEngine === 'local'
-                                            ? '🟢 Memora Local AI (Qwen3-VL-8B)'
+                                            ? '🟢 Stash Local AI (Qwen3-VL-8B)'
                                             : '⚡ Browser AI Fallback (Florence-2)')} ({indexingState.current} / {indexingState.total})
                                 </span>
                                 {indexingState.isIndexing ? (
@@ -548,7 +551,7 @@ const Dashboard = () => {
                         {/* Modal Body */}
                         <div style={{ padding: '20px 24px', overflowY: 'auto', flex: 1 }}>
                             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '16px' }}>
-                                These photos could not be found in any connected folder. If you re-attach the drive or move them back, Memora will restore them automatically. Or you can permanently delete their records now.
+                                These photos could not be found in any connected folder. If you re-attach the drive or move them back, Stash will restore them automatically. Or you can permanently delete their records now.
                             </p>
 
                             {missingImages.length === 0 ? (
@@ -579,7 +582,7 @@ const Dashboard = () => {
                                                 onClick={() => handleDeleteSingleMissing(img.imageId, img.fileName)}
                                                 className="btn-logout"
                                                 style={{ fontSize: '0.75rem', padding: '4px 10px', color: '#dc2626', borderColor: '#fca5a5' }}
-                                                title="Permanently remove from Memora"
+                                                title="Permanently remove from Stash"
                                             >
                                                 Delete
                                             </button>

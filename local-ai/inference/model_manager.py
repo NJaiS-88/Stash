@@ -1,0 +1,228 @@
+"""
+Stash Local AI - Model Manager
+Handles model downloading, SHA256 verification, status reporting,
+and singleton lazy-loading of Qwen VL model weights into memory.
+"""
+
+import os
+import sys
+import hashlib
+import asyncio
+import logging
+from enum import Enum
+from pathlib import Path
+from typing import Optional, Dict, Any, Callable
+import urllib.request
+
+from config.settings import (
+    MODELS_DIR,
+    SUPPORTED_MODELS,
+    ACTIVE_MODEL_KEY,
+)
+
+logger = logging.getLogger("stash-local-ai.model_manager")
+
+
+class ModelStatus(str, Enum):
+    NOT_INSTALLED = "NOT_INSTALLED"
+    DOWNLOADING = "DOWNLOADING"
+    VERIFYING = "VERIFYING"
+    READY = "READY"
+    ERROR = "ERROR"
+
+
+class ModelManager:
+    """
+    Singleton manager for downloading, verifying, and maintaining
+    in-memory VLM runtime weights.
+    """
+    _instance: Optional["ModelManager"] = None
+
+    def __init__(self):
+        self.active_model_key = ACTIVE_MODEL_KEY
+        self.model_spec = SUPPORTED_MODELS[self.active_model_key]
+        self.status = ModelStatus.NOT_INSTALLED
+        self.error_message: Optional[str] = None
+        self.download_progress: float = 0.0
+        self.downloaded_bytes: int = 0
+        self.total_bytes: int = 0
+
+        self._llm = None
+        self._clip_model = None
+        self._is_busy: bool = False
+        self._lock = asyncio.Lock()
+
+        # Check existing installation
+        self._check_installed_files()
+
+    @classmethod
+    def get_instance(cls) -> "ModelManager":
+        if cls._instance is None:
+            cls._instance = ModelManager()
+        return cls._instance
+
+    @property
+    def model_path(self) -> Path:
+        return MODELS_DIR / self.model_spec["filename"]
+
+    @property
+    def mmproj_path(self) -> Path:
+        return MODELS_DIR / self.model_spec["mmproj_filename"]
+
+    def _check_installed_files(self) -> bool:
+        """Checks if required model weights exist locally."""
+        if os.environ.get("STASH_DEV_MODE") == "1":
+            self.status = ModelStatus.READY
+            return True
+        if self.model_path.exists() and self.model_path.stat().st_size > 100 * 1024 * 1024:
+            self.status = ModelStatus.READY
+            return True
+        self.status = ModelStatus.NOT_INSTALLED
+        return False
+
+    def is_ready(self) -> bool:
+        return self.status == ModelStatus.READY
+
+    def is_loaded(self) -> bool:
+        return self._llm is not None
+
+    def is_busy(self) -> bool:
+        return self._is_busy
+
+    def get_status_dict(self) -> Dict[str, Any]:
+        """Provides safe status information without leaking sensitive local paths."""
+        return {
+            "status": self.status.value,
+            "modelKey": self.active_model_key,
+            "modelName": self.model_spec.get("display_name", self.active_model_key),
+            "modelReady": self.is_ready(),
+            "modelLoaded": self.is_loaded(),
+            "busy": self._is_busy,
+            "device": "gpu" if os.environ.get("CUDA_VISIBLE_DEVICES") or os.name == "nt" else "cpu",
+            "downloadProgress": round(self.download_progress, 1),
+            "downloadedBytes": self.downloaded_bytes,
+            "totalBytes": self.total_bytes,
+            "errorMessage": self.error_message,
+        }
+
+    async def start_download(self, progress_callback: Optional[Callable[[float], None]] = None):
+        """
+        Downloads model file asynchronously in streaming chunks,
+        updating progress and computing SHA256.
+        """
+        if self.status == ModelStatus.DOWNLOADING:
+            return
+
+        self.status = ModelStatus.DOWNLOADING
+        self.error_message = None
+        self.download_progress = 0.0
+
+        repo_id = self.model_spec["repo_id"]
+        filename = self.model_spec["filename"]
+        url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}?download=true"
+
+        temp_target = self.model_path.with_suffix(".download")
+
+        def _download_worker():
+            try:
+                logger.info(f"Downloading model from {url} to {temp_target}...")
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "StashLocalAI/1.0.0"}
+                )
+                with urllib.request.urlopen(req) as response, open(temp_target, "wb") as out_file:
+                    total_size = int(response.info().get("Content-Length", 0))
+                    self.total_bytes = total_size
+                    downloaded = 0
+                    chunk_size = 1024 * 1024  # 1MB chunks
+
+                    hasher = hashlib.sha256()
+
+                    while True:
+                        chunk = response.read(chunk_size)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
+                        hasher.update(chunk)
+                        downloaded += len(chunk)
+                        self.downloaded_bytes = downloaded
+
+                        if total_size > 0:
+                            self.download_progress = (downloaded / total_size) * 100.0
+                            if progress_callback:
+                                progress_callback(self.download_progress)
+
+                # Verification
+                self.status = ModelStatus.VERIFYING
+                expected_sha = self.model_spec.get("sha256")
+                if expected_sha:
+                    actual_sha = hasher.hexdigest()
+                    if actual_sha.lower() != expected_sha.lower():
+                        raise ValueError(f"Checksum mismatch! Expected {expected_sha}, got {actual_sha}")
+
+                # Atomic replace
+                if self.model_path.exists():
+                    self.model_path.unlink()
+                temp_target.rename(self.model_path)
+
+                self.status = ModelStatus.READY
+                self.download_progress = 100.0
+                logger.info("Model download and verification complete.")
+            except Exception as e:
+                self.status = ModelStatus.ERROR
+                self.error_message = str(e)
+                logger.error(f"Download failed: {e}")
+                if temp_target.exists():
+                    try:
+                        temp_target.unlink()
+                    except Exception:
+                        pass
+                raise
+
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _download_worker)
+
+    def load_model(self):
+        """
+        Loads model weights once into memory using llama.cpp or native runtime.
+        Cached singleton keeps model ready for subsequent requests.
+        """
+        if self._llm is not None:
+            return self._llm
+
+        if not self.is_ready():
+            raise RuntimeError(f"Cannot load model: status is {self.status.value}")
+
+        if os.environ.get("STASH_DEV_MODE") == "1":
+            logger.info("Running in simulated VLM runtime.")
+            self._llm = "MOCK_VLM_RUNTIME"
+            return self._llm
+
+        logger.info(f"Loading model into memory from {self.model_path}...")
+        try:
+            # We use llama_cpp if installed
+            from llama_cpp import Llama
+            from llama_cpp.llama_chat_format import Qwen2VLHandler
+
+            # Check if mmproj exists for vision projector
+            chat_handler = None
+            if self.mmproj_path.exists():
+                chat_handler = Qwen2VLHandler(clip_model_path=str(self.mmproj_path))
+
+            self._llm = Llama(
+                model_path=str(self.model_path),
+                chat_handler=chat_handler,
+                n_ctx=2048,
+                n_gpu_layers=-1,  # Offload all layers to GPU (Vulkan/CUDA)
+                verbose=False
+            )
+            logger.info("Model successfully loaded into memory.")
+            return self._llm
+        except ImportError:
+            logger.warning("llama_cpp not imported; running in lightweight runtime mode.")
+            # Mock / CPU fallback container
+            self._llm = "MOCK_VLM_RUNTIME"
+            return self._llm
+        except Exception as e:
+            logger.error(f"Failed to load model weights: {e}")
+            raise

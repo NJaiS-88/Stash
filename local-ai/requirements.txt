@@ -1,0 +1,11 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.28.0
+pydantic>=2.6.0
+python-multipart>=0.0.9
+pillow>=10.2.0
+pyinstaller>=6.5.0
+# Native quantized runtime: install with appropriate hardware backend
+# CPU: pip install llama-cpp-python
+# CUDA: CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+# Vulkan: CMAKE_ARGS="-DGGML_VULKAN=on" pip install llama-cpp-python
+llama-cpp-python>=0.2.75; sys_platform == 'win32'

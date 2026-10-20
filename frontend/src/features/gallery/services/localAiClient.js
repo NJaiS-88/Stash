@@ -1,11 +1,12 @@
 /**
- * Memora Local AI Helper Client
+ * Stash Local AI Helper Client
  * Communicates with the native loopback helper service on 127.0.0.1:48124.
  * Runs Qwen3-VL-8B-Instruct with native GPU acceleration and zero cloud leakage.
  */
 
 export const LOCAL_AI_DEFAULT_PORT = 48124;
 export const LOCAL_AI_BASE_URL = `http://127.0.0.1:${LOCAL_AI_DEFAULT_PORT}`;
+export const LOCAL_AI_SETUP_DOWNLOAD_URL = '/downloads/StashLocalAI-Setup.exe';
 
 export const SEARCH_RETRIEVAL_PROMPT = `Generate one concise but detailed factual caption for this image. Describe only clearly visible information useful for photo search:
 - people and approximate count
@@ -30,7 +31,7 @@ export function extractKeywords(caption) {
 }
 
 /**
- * Checks if the Memora Local AI Helper is running and healthy on 127.0.0.1.
+ * Checks if the Stash Local AI Helper is running and healthy on 127.0.0.1.
  * Fast 1-second timeout prevents any stalling if the helper is not installed.
  *
  * @returns {Promise<{ available: boolean, model?: string, device?: string, version?: string }>}
@@ -60,6 +61,25 @@ export async function checkLocalAiHealth() {
         return { available: false };
     } catch {
         return { available: false };
+    }
+}
+
+/**
+ * Fetches safe telemetry and download progress from the Local AI Helper.
+ * @returns {Promise<Object|null>}
+ */
+export async function getLocalAiStatus() {
+    try {
+        const res = await fetch(`${LOCAL_AI_BASE_URL}/status`, {
+            method: 'GET',
+            headers: { 'Accept': 'application/json' }
+        });
+        if (res.ok) {
+            return await res.json();
+        }
+        return null;
+    } catch {
+        return null;
     }
 }
 

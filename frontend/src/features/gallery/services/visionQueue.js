@@ -1,6 +1,6 @@
 /**
  * Vision Queue Controller — Two-Tier Local Inference System
- * Tier 1 (Preferred): Memora Local AI Helper on 127.0.0.1 (Qwen3-VL-8B-Instruct).
+ * Tier 1 (Preferred): Stash Local AI Helper on 127.0.0.1 (Qwen3-VL-8B-Instruct).
  * Tier 2 (Zero-Install Fallback): Browser Web Worker (Florence-2-base-ft / vit-gpt2).
  * Guarantees zero cloud image leakage, concurrency = 1, and atomic IndexedDB leasing.
  */
@@ -116,12 +116,12 @@ class VisionQueueManager {
 
         await resetStaleProcessingImages();
 
-        // Tier 1 Detection: Probe 127.0.0.1 Memora Local AI Helper
+        // Tier 1 Detection: Probe 127.0.0.1 Stash Local AI Helper
         const localHealth = await checkLocalAiHealth();
         if (localHealth.available) {
             this.status.activeEngine = 'local';
             this.status.activeModel = localHealth.model || 'Qwen3-VL-8B-Instruct';
-            console.log('[VisionQueue] Preferred Tier 1 Active: Memora Local AI (Qwen3-VL-8B)');
+            console.log('[VisionQueue] Preferred Tier 1 Active: Stash Local AI (Qwen3-VL-8B)');
         } else {
             this.status.activeEngine = 'browser';
             this.status.activeModel = 'Florence-2-base-ft';
@@ -188,7 +188,7 @@ class VisionQueueManager {
 
                 let result = null;
 
-                // ---------------- TIER 1: MEMORA LOCAL AI ----------------
+                // ---------------- TIER 1: STASH LOCAL AI ----------------
                 if (this.status.activeEngine === 'local') {
                     try {
                         const localRes = await requestLocalCaption(file, img.fileName);
