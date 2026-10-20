@@ -84,21 +84,28 @@ app.include_router(status_router)
 app.include_router(caption_router)
 
 
-if __name__ == "__main__":
-    # Prevent uvicorn from using color formatter when running windowless
-    log_config = uvicorn.config.LOGGING_CONFIG.copy()
-    if "formatters" in log_config:
-        if "default" in log_config["formatters"]:
-            log_config["formatters"]["default"]["use_colors"] = False
-        if "access" in log_config["formatters"]:
-            log_config["formatters"]["access"]["use_colors"] = False
-
-    # STRICT: Loopback only (127.0.0.1)
-    uvicorn.run(
+def run_uvicorn():
+    """Runs the Uvicorn web server with live console and file logging."""
+    config = uvicorn.Config(
         app,
         host=HOST,
         port=PORT,
         log_level="info",
-        log_config=log_config,
-        access_log=False
+        access_log=True
     )
+    server = uvicorn.Server(config)
+    server.run()
+
+
+if __name__ == "__main__":
+    try:
+        run_uvicorn()
+    except Exception as e:
+        logger.error(f"Fatal error starting Stash Local AI: {e}", exc_info=True)
+        print(f"\n[FATAL ERROR] {e}")
+        try:
+            input("\nPress Enter to exit...")
+        except Exception:
+            pass
+
+

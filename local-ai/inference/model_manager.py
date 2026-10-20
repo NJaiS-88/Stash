@@ -170,6 +170,9 @@ class ModelManager:
                 self.total_bytes = total_size
                 downloaded = 0
                 chunk_size = 1024 * 1024  # 1MB chunks
+                last_logged_pct = -1
+
+                logger.info(f"Starting download of {fname} ({total_size / (1024*1024):.1f} MB)...")
 
                 with open(temp_target, "wb") as out_file:
                     while True:
@@ -182,11 +185,19 @@ class ModelManager:
 
                         if total_size > 0:
                             self.download_progress = (downloaded / total_size) * 100.0
+                            current_pct_step = int(self.download_progress // 10) * 10
+                            if current_pct_step != last_logged_pct:
+                                last_logged_pct = current_pct_step
+                                logger.info(
+                                    f"[{fname}] Progress: {self.download_progress:.1f}% "
+                                    f"({downloaded / (1024*1024):.1f} MB / {total_size / (1024*1024):.1f} MB)"
+                                )
                             if progress_callback:
                                 progress_callback(self.download_progress)
 
             # File handles are closed; atomic replace with retry for Windows lock release
             _safe_rename(temp_target, target)
+            logger.info(f"Successfully downloaded and verified: {fname}")
 
         def _download_worker():
             try:
@@ -251,26 +262,50 @@ class ModelManager:
                         except ImportError:
                             chat_handler = None
 
-            # Qwen25VLChatHandler strictly requires logits_all=True and minimum 4096 context tokens
+            # Determine hardware acceleration support
+            threads = max(1, (os.cpu_count() or 4) - 1)
+            can_try_gpu = False
             try:
+                import llama_cpp
+                if hasattr(llama_cpp, "llama_supports_gpu_offload"):
+                    can_try_gpu = bool(llama_cpp.llama_supports_gpu_offload())
+                elif hasattr(llama_cpp, "llama_supports_mmap"):
+                    # Check if CUDA DLLs are loaded
+                    can_try_gpu = bool(os.environ.get("CUDA_VISIBLE_DEVICES") != "-1")
+            except Exception:
+                can_try_gpu = False
+
+            if can_try_gpu:
+                try:
+                    logger.info(f"Attempting GPU offload with {threads} CPU threads...")
+                    self._llm = Llama(
+                        model_path=str(self.model_path),
+                        chat_handler=chat_handler,
+                        n_ctx=4096,
+                        logits_all=True,
+                        n_threads=threads,
+                        n_batch=512,
+                        n_gpu_layers=-1,
+                        verbose=False
+                    )
+                    logger.info("Model loaded with GPU acceleration enabled.")
+                except Exception as gpu_err:
+                    logger.warning(f"GPU offload unavailable ({gpu_err}); falling back to optimized CPU mode...")
+                    self._llm = None
+
+            if self._llm is None:
+                logger.info(f"Loading model on CPU mode (n_gpu_layers=0) using {threads} parallel compute threads...")
                 self._llm = Llama(
                     model_path=str(self.model_path),
                     chat_handler=chat_handler,
                     n_ctx=4096,
                     logits_all=True,
-                    n_gpu_layers=-1,  # Attempt GPU offloading
-                    verbose=False
-                )
-            except Exception as gpu_err:
-                logger.warning(f"GPU initialization skipped ({gpu_err}); running on CPU (n_gpu_layers=0)...")
-                self._llm = Llama(
-                    model_path=str(self.model_path),
-                    chat_handler=chat_handler,
-                    n_ctx=4096,
-                    logits_all=True,
+                    n_threads=threads,
+                    n_batch=512,
                     n_gpu_layers=0,
                     verbose=False
                 )
+                logger.info("Model loaded successfully in high-performance CPU mode.")
 
             logger.info("Model successfully loaded into memory.")
             return self._llm

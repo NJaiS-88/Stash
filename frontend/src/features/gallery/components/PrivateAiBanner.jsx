@@ -132,16 +132,26 @@ export default function PrivateAiBanner() {
                             Retry Model Download
                         </button>
                     )}
-                    <span style={{
-                        fontSize: '0.75rem',
-                        backgroundColor: isError ? '#fecaca' : '#bbf7d0',
-                        color: isError ? '#7f1d1d' : '#14532d',
-                        padding: '4px 10px',
-                        borderRadius: '12px',
-                        fontWeight: 600
-                    }}>
-                        127.0.0.1:48124
-                    </span>
+                    <a
+                        href="http://127.0.0.1:48124/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                            fontSize: '0.75rem',
+                            backgroundColor: isError ? '#fecaca' : '#bbf7d0',
+                            color: isError ? '#7f1d1d' : '#14532d',
+                            padding: '4px 10px',
+                            borderRadius: '12px',
+                            fontWeight: 600,
+                            textDecoration: 'none',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                        }}
+                        title="Open Stash Local AI Live Diagnostic Dashboard"
+                    >
+                        <span>📊 Logs & Status</span>
+                    </a>
                 </div>
             </div>
         );
