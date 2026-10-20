@@ -104,7 +104,6 @@ class LocalSecurityMiddleware(BaseHTTPMiddleware):
         if origin and is_allowed_origin(origin):
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Credentials"] = "true"
-            if request.headers.get("Access-Control-Request-Private-Network") == "true":
-                response.headers["Access-Control-Allow-Private-Network"] = "true"
+            response.headers["Access-Control-Allow-Private-Network"] = "true"
 
         return response
