@@ -81,8 +81,8 @@ async def generate_caption(
                     ]
                 }
             ]
-            # Full token budget for deep, comprehensive, multi-sentence retrieval captions
-            effective_max_tokens = max_tokens if max_tokens else 120
+            # Balanced 85-token budget: rich 3-4 sentence descriptions while shaving 7 seconds off CPU decode
+            effective_max_tokens = min(max_tokens, 85) if max_tokens else 85
 
             # Run blocking C++ model inference in worker thread pool so FastAPI event loop remains responsive
             loop = asyncio.get_running_loop()

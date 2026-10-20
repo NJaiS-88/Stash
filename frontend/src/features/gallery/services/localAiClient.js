@@ -99,7 +99,7 @@ export async function requestLocalCaption(fileBlob, fileName = 'image.jpg', opti
     const formData = new FormData();
     formData.append('image', fileBlob, fileName);
     formData.append('prompt', options.prompt || SEARCH_RETRIEVAL_PROMPT);
-    formData.append('maxTokens', options.maxTokens || 120);
+    formData.append('maxTokens', options.maxTokens || 85);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s timeout for CPU inference
