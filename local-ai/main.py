@@ -85,13 +85,13 @@ app.include_router(caption_router)
 
 
 def run_uvicorn():
-    """Runs the Uvicorn web server with live console and file logging."""
+    """Runs the Uvicorn web server with clean console logging (no HTTP access spam)."""
     config = uvicorn.Config(
         app,
         host=HOST,
         port=PORT,
         log_level="info",
-        access_log=True
+        access_log=False
     )
     server = uvicorn.Server(config)
     server.run()

@@ -16,6 +16,8 @@ export default function PrivateAiBanner() {
     useEffect(() => {
         let mounted = true;
 
+        let intervalId = null;
+
         async function pollLocalAI() {
             try {
                 const health = await checkLocalAiHealth();
@@ -27,6 +29,11 @@ export default function PrivateAiBanner() {
                     if (mounted && status) {
                         setModelStatus(status);
                     }
+                    // Once connected and ready, stop polling completely to free up all CPU
+                    if (health.modelReady && intervalId) {
+                        clearInterval(intervalId);
+                        intervalId = null;
+                    }
                 }
             } catch (err) {
                 // Ignore background polling errors
@@ -34,12 +41,12 @@ export default function PrivateAiBanner() {
         }
 
         pollLocalAI();
-        // Poll every 4 seconds to immediately detect when installer finishes
-        const intervalId = setInterval(pollLocalAI, 4000);
+        // Only polls while waiting for the service/installer to launch
+        intervalId = setInterval(pollLocalAI, 8000);
 
         return () => {
             mounted = false;
-            clearInterval(intervalId);
+            if (intervalId) clearInterval(intervalId);
         };
     }, []);
 

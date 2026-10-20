@@ -62,7 +62,7 @@ async def generate_caption(
         model_mgr._is_busy = True
 
         try:
-            # 1. Preprocess in memory
+            logger.info("📸 Processing image for captioning...")
             pil_img = preprocess_image_bytes(image_bytes)
             jpeg_bytes = image_to_jpeg_bytes(pil_img)
             b64_image = base64.b64encode(jpeg_bytes).decode("utf-8")
@@ -100,6 +100,7 @@ async def generate_caption(
 
             # Clean any leftover wrapper quotes or reasoning tags
             caption_text = re.sub(r"^[\"']|[\"']$", "", caption_text).strip()
+            logger.info(f"✅ Generated: \"{caption_text}\"")
             keywords = extract_keywords(caption_text)
 
             return {
