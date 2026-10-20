@@ -47,6 +47,10 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
  * Preserves permanent imageId even across renames or moves.
  *
  * @param {Array} flatFiles
+ * @param {string} folderId
+ * @param {Array} existingRecords
+ * @returns {Promise<Array>}
+ */
 const IMAGE_EXTENSIONS = new Set([
     'jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'bmp', 'avif', 'heic', 'tiff'
 ]);
