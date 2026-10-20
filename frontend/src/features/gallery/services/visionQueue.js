@@ -1,7 +1,8 @@
 /**
- * Vision Queue Controller
- * Orchestrates off-thread AI image captioning using vision.worker.js.
- * Guarantees atomic claims via IndexedDB, concurrency = 1, and zero main-thread freezing.
+ * Vision Queue Controller — Two-Tier Local Inference System
+ * Tier 1 (Preferred): Memora Local AI Helper on 127.0.0.1 (Qwen3-VL-8B-Instruct).
+ * Tier 2 (Zero-Install Fallback): Browser Web Worker (Florence-2-base-ft / vit-gpt2).
+ * Guarantees zero cloud image leakage, concurrency = 1, and atomic IndexedDB leasing.
  */
 
 import {
@@ -13,6 +14,7 @@ import {
 } from './galleryDb';
 import { resolveFileByPath } from './fileSystem';
 import { describeImage } from './visionModel';
+import { checkLocalAiHealth, requestLocalCaption } from './localAiClient';
 
 class VisionQueueManager {
     constructor() {
@@ -28,12 +30,14 @@ class VisionQueueManager {
             current: 0,
             total: 0,
             currentFile: '',
-            modelStatus: 'Idle'
+            modelStatus: 'Idle',
+            activeEngine: 'browser', // 'local' | 'browser'
+            activeModel: 'Florence-2-base-ft'
         };
     }
 
     /**
-     * Subscribe to queue state updates (progress, status, file updates).
+     * Subscribe to queue state updates (progress, status, file updates, active engine).
      * @param {Function} callback
      * @returns {Function} Unsubscribe function
      */
@@ -55,7 +59,7 @@ class VisionQueueManager {
     }
 
     /**
-     * Initialize worker thread with fallback to in-thread inference.
+     * Initialize worker thread for Tier 2 browser fallback.
      */
     initWorker() {
         if (this.worker) return;
@@ -85,7 +89,7 @@ class VisionQueueManager {
             };
 
             this.worker.onerror = (err) => {
-                console.warn('[VisionQueue] Worker encountered error, falling back:', err);
+                console.warn('[VisionQueue] Web Worker error:', err);
                 if (this.activeResolve) {
                     this.activeResolve(null);
                     this.activeResolve = null;
@@ -94,13 +98,14 @@ class VisionQueueManager {
 
             this.worker.postMessage({ type: 'INIT' });
         } catch (err) {
-            console.warn('[VisionQueue] Web Worker unsupported or failed to spawn; falling back to main-thread engine:', err);
+            console.warn('[VisionQueue] Web Worker unsupported; falling back to main-thread engine:', err);
             this.worker = null;
         }
     }
 
     /**
-     * Start or resume the AI indexing queue.
+     * Start or resume the two-tier AI indexing queue.
+     * Probes Local AI Helper first; defaults to Qwen3-VL-8B if healthy, falls back to Browser AI.
      * @param {Array} folders - Optional folder handles list
      */
     async start(folders = null) {
@@ -108,16 +113,30 @@ class VisionQueueManager {
 
         this.isPaused = false;
         this.isRunning = true;
-        this.initWorker();
 
         await resetStaleProcessingImages();
+
+        // Tier 1 Detection: Probe 127.0.0.1 Memora Local AI Helper
+        const localHealth = await checkLocalAiHealth();
+        if (localHealth.available) {
+            this.status.activeEngine = 'local';
+            this.status.activeModel = localHealth.model || 'Qwen3-VL-8B-Instruct';
+            console.log('[VisionQueue] Preferred Tier 1 Active: Memora Local AI (Qwen3-VL-8B)');
+        } else {
+            this.status.activeEngine = 'browser';
+            this.status.activeModel = 'Florence-2-base-ft';
+            console.log('[VisionQueue] Tier 1 Offline. Using Tier 2 zero-install Browser AI (Florence-2 Web Worker)');
+            this.initWorker();
+        }
 
         const pendingList = await getPendingImages();
         this.status.isIndexing = true;
         this.status.isPaused = false;
         this.status.total = pendingList.length;
         this.status.current = 0;
-        this.status.modelStatus = pendingList.length > 0 ? 'Starting AI queue...' : 'All photos indexed.';
+        this.status.modelStatus = pendingList.length > 0
+            ? `Starting AI queue using ${this.status.activeEngine === 'local' ? 'Local Qwen3-VL' : 'Browser AI'}...`
+            : 'All photos indexed.';
         this.notify();
 
         if (pendingList.length === 0) {
@@ -136,13 +155,12 @@ class VisionQueueManager {
             // Claim next available pending image atomically
             const img = await claimNextPendingImage();
             if (!img) {
-                // No more pending images in database
+                // No more pending images
                 break;
             }
 
             let folder = folderMap.get(img.folderId);
             if (!folder?.handle) {
-                // Refresh folder map in case a new folder was connected dynamically
                 const refreshedFolders = await getAllFolders();
                 for (const f of refreshedFolders) {
                     folderMap.set(f.id, f);
@@ -157,7 +175,8 @@ class VisionQueueManager {
 
             this.status.current = ++processedCount;
             this.status.currentFile = img.fileName;
-            this.status.modelStatus = `Analyzing ${img.fileName} (${this.status.current}/${this.status.total})...`;
+            const engineLabel = this.status.activeEngine === 'local' ? 'Local Qwen3-VL-8B' : 'Browser AI';
+            this.status.modelStatus = `Analyzing ${img.fileName} (${this.status.current}/${this.status.total}) via ${engineLabel}...`;
             this.notify();
 
             try {
@@ -169,28 +188,66 @@ class VisionQueueManager {
 
                 let result = null;
 
-                if (this.worker) {
-                    // Send to off-thread Web Worker
-                    result = await new Promise((resolve) => {
-                        this.activeResolve = resolve;
-                        this.worker.postMessage({
-                            type: 'PROCESS_IMAGE',
-                            imageId: img.imageId,
-                            blob: file,
-                            fileName: img.fileName
+                // ---------------- TIER 1: MEMORA LOCAL AI ----------------
+                if (this.status.activeEngine === 'local') {
+                    try {
+                        const localRes = await requestLocalCaption(file, img.fileName);
+                        result = {
+                            caption: localRes.caption,
+                            keywords: localRes.keywords,
+                            engine: 'local',
+                            model: localRes.model || 'qwen3-vl-8b-instruct'
+                        };
+                    } catch (localErr) {
+                        console.warn('[VisionQueue] Local AI Helper request failed, falling back to Browser AI:', localErr);
+                        // Seamless mid-queue fallback to browser Web Worker
+                        this.status.activeEngine = 'browser';
+                        this.status.activeModel = 'Florence-2-base-ft';
+                        this.initWorker();
+                    }
+                }
+
+                // ---------------- TIER 2: BROWSER AI FALLBACK ----------------
+                if (!result || !result.caption) {
+                    if (this.worker) {
+                        const workerRes = await new Promise((resolve) => {
+                            this.activeResolve = resolve;
+                            this.worker.postMessage({
+                                type: 'PROCESS_IMAGE',
+                                imageId: img.imageId,
+                                blob: file,
+                                fileName: img.fileName
+                            });
                         });
-                    });
+                        if (workerRes) {
+                            result = {
+                                caption: workerRes.caption,
+                                keywords: workerRes.keywords,
+                                engine: 'browser',
+                                model: 'florence-2-base-ft'
+                            };
+                        }
+                    }
+
+                    // Emergency main-thread fallback if worker yielded nothing
+                    if (!result || !result.caption) {
+                        const directRes = await describeImage(file);
+                        result = {
+                            caption: directRes.caption,
+                            keywords: directRes.keywords,
+                            engine: 'browser',
+                            model: 'florence-2-base-ft'
+                        };
+                    }
                 }
 
-                // If worker wasn't available or returned null, use direct engine
-                if (!result) {
-                    result = await describeImage(file);
-                }
-
-                if (result) {
+                if (result && result.caption) {
                     await updateImageAI(img.imageId, {
                         caption: result.caption,
-                        keywords: result.keywords
+                        keywords: result.keywords,
+                        engine: result.engine || 'browser',
+                        model: result.model || 'florence-2-base-ft',
+                        version: 1
                     });
 
                     // Live event notification for UI cards to immediately render new tags & caption
@@ -198,7 +255,9 @@ class VisionQueueManager {
                         imageId: img.imageId,
                         folderId: img.folderId,
                         caption: result.caption,
-                        keywords: result.keywords
+                        keywords: result.keywords,
+                        engine: result.engine,
+                        model: result.model
                     };
                     this.notify();
                 }
@@ -236,3 +295,4 @@ class VisionQueueManager {
 
 // Global singleton instance
 export const visionQueue = new VisionQueueManager();
+

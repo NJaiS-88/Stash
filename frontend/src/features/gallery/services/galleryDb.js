@@ -1,5 +1,5 @@
 const DB_NAME = 'stash_db';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 const FOLDERS_STORE = 'folders';
 const IMAGES_STORE = 'images';
 
@@ -37,6 +37,13 @@ function getDB() {
             // Phase 9: Index on status ('available' vs 'missing')
             if (!imageStore.indexNames.contains('status')) {
                 imageStore.createIndex('status', 'status', { unique: false });
+            }
+            // Two-Tier State Machine Indexes: decoupled local captioning & cloud vector sync
+            if (!imageStore.indexNames.contains('captionStatus')) {
+                imageStore.createIndex('captionStatus', 'captionStatus', { unique: false });
+            }
+            if (!imageStore.indexNames.contains('cloudIndexStatus')) {
+                imageStore.createIndex('cloudIndexStatus', 'cloudIndexStatus', { unique: false });
             }
         };
         request.onsuccess = () => resolve(request.result);
@@ -116,7 +123,17 @@ export async function saveImageRecords(records) {
             const tx = db.transaction(IMAGES_STORE, 'readwrite');
             const store = tx.objectStore(IMAGES_STORE);
             for (const record of records) {
-                store.put(record);
+                // Normalize two-phase state machine fields and provenance
+                const normalized = {
+                    ...record,
+                    captionStatus: record.captionStatus || (record.caption ? 'completed' : 'pending'),
+                    cloudIndexStatus: record.cloudIndexStatus || (record.embedding ? 'completed' : 'pending'),
+                    captionEngine: record.captionEngine || (record.caption ? 'browser' : null),
+                    captionModel: record.captionModel || (record.caption ? 'florence-2-base-ft' : null),
+                    captionVersion: record.captionVersion || 1,
+                    retryCount: record.retryCount || 0
+                };
+                store.put(normalized);
             }
             tx.oncomplete = () => resolve(true);
             tx.onerror = () => reject(tx.error);
@@ -346,15 +363,19 @@ export async function purgeMissingImages() {
 }
 
 /**
- * Phase 14: Returns all available images with indexingStatus === 'pending'
- * that require in-browser vision AI inference.
+ * Returns all available images with captionStatus === 'pending'
+ * that require visual AI inference (via Local Qwen or Browser fallback).
  *
  * @returns {Promise<Array>}
  */
 export async function getPendingImages() {
     try {
         const available = await getAvailableImages();
-        return available.filter(img => img.indexingStatus === 'pending');
+        return available.filter(img =>
+            img.captionStatus === 'pending' ||
+            (!img.captionStatus && img.indexingStatus === 'pending') ||
+            (!img.caption && img.captionStatus !== 'completed')
+        );
     } catch (error) {
         console.error('Error getting pending images:', error);
         return [];
@@ -362,14 +383,22 @@ export async function getPendingImages() {
 }
 
 /**
- * Phase 14: Updates an image record in IndexedDB with in-browser AI vision results.
- * Sets indexingStatus to 'indexed' and preserves all other fields.
+ * Updates an image record in IndexedDB with local or browser AI vision results.
+ * Sets captionStatus to 'completed', cloudIndexStatus to 'pending',
+ * and records caption provenance (engine, model, version).
  *
  * @param {string} imageId
- * @param {Object} aiData - { caption, keywords, embedding }
+ * @param {Object} aiData - { caption, keywords, embedding, engine, model, version }
  * @returns {Promise<boolean>}
  */
-export async function updateImageAI(imageId, { caption, keywords, embedding = null }) {
+export async function updateImageAI(imageId, {
+    caption,
+    keywords,
+    embedding = null,
+    engine = 'browser', // 'local' | 'browser'
+    model = 'florence-2-base-ft',
+    version = 1
+}) {
     if (!imageId) return false;
     try {
         const db = await getDB();
@@ -390,6 +419,15 @@ export async function updateImageAI(imageId, { caption, keywords, embedding = nu
                     caption: caption || record.caption,
                     keywords: keywords || record.keywords || [],
                     embedding: embedding || record.embedding || null,
+                    // Decoupled Two-Phase State Machine
+                    captionStatus: 'completed',
+                    cloudIndexStatus: embedding ? 'completed' : (record.cloudIndexStatus || 'pending'),
+                    // Caption Provenance
+                    captionEngine: engine,
+                    captionModel: model,
+                    captionVersion: version,
+                    captionedAt: Date.now(),
+                    // Backward compatibility
                     indexingStatus: 'indexed',
                     processingStartedAt: null,
                     indexedAt: Date.now()
@@ -487,7 +525,7 @@ export async function getImagesPaged(folderId = null, offset = 0, limit = 60) {
 
 /**
  * Resets any image stuck in 'processing' state back to 'pending'
- * (e.g. if the user closed the tab mid-inference). Prevents orphaned jobs.
+ * (e.g. if the user closed the browser mid-inference). Prevents orphaned jobs.
  *
  * @param {number} maxAgeMs - Maximum allowed processing age before resetting (default: 2 mins)
  * @returns {Promise<number>} Count of reset records
@@ -509,9 +547,11 @@ export async function resetStaleProcessingImages(maxAgeMs = 120000) {
                     return;
                 }
                 const record = cursor.value;
-                if (record.indexingStatus === 'processing') {
+                const isProcessing = record.captionStatus === 'processing' || record.indexingStatus === 'processing';
+                if (isProcessing) {
                     const started = record.processingStartedAt || 0;
                     if (now - started > maxAgeMs) {
+                        record.captionStatus = 'pending';
                         record.indexingStatus = 'pending';
                         record.processingStartedAt = null;
                         record.retryCount = (record.retryCount || 0) + 1;
@@ -530,7 +570,7 @@ export async function resetStaleProcessingImages(maxAgeMs = 120000) {
 }
 
 /**
- * Atomically claims the next pending image for background AI worker processing.
+ * Atomically claims the next pending image for local or browser AI processing.
  *
  * @returns {Promise<Object|null>}
  */
@@ -549,7 +589,12 @@ export async function claimNextPendingImage() {
                     return;
                 }
                 const record = cursor.value;
-                if (record.indexingStatus === 'pending' && record.status === 'available') {
+                const isPending =
+                    (record.captionStatus === 'pending' || (!record.captionStatus && record.indexingStatus === 'pending') || (!record.caption && record.captionStatus !== 'completed')) &&
+                    record.status === 'available';
+
+                if (isPending) {
+                    record.captionStatus = 'processing';
                     record.indexingStatus = 'processing';
                     record.processingStartedAt = Date.now();
                     cursor.update(record);

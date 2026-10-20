@@ -96,21 +96,23 @@ export default function Gallery() {
                                             display: 'flex',
                                             alignItems: 'center',
                                             gap: '6px',
-                                            backgroundColor: '#eff6ff',
-                                            border: '1px solid #bfdbfe',
+                                            backgroundColor: indexingState.activeEngine === 'local' ? '#f0fdf4' : '#eff6ff',
+                                            border: `1px solid ${indexingState.activeEngine === 'local' ? '#bbf7d0' : '#bfdbfe'}`,
                                             borderRadius: '20px',
                                             padding: '3px 10px',
                                             fontSize: '0.75rem',
-                                            color: '#1d4ed8'
+                                            color: indexingState.activeEngine === 'local' ? '#166534' : '#1d4ed8'
                                         }}>
-                                            <span style={{ fontWeight: 600 }}>AI: {indexingState.current}/{indexingState.total}</span>
+                                            <span style={{ fontWeight: 600 }}>
+                                                {indexingState.activeEngine === 'local' ? '🟢 Local AI' : '⚡ Browser AI'}: {indexingState.current}/{indexingState.total}
+                                            </span>
                                             <button
                                                 onClick={pauseAIIndexing}
                                                 style={{
                                                     background: 'none',
                                                     border: 'none',
                                                     cursor: 'pointer',
-                                                    color: '#2563eb',
+                                                    color: indexingState.activeEngine === 'local' ? '#15803d' : '#2563eb',
                                                     textDecoration: 'underline',
                                                     fontSize: '0.72rem',
                                                     padding: 0

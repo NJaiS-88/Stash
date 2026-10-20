@@ -221,8 +221,8 @@ const Dashboard = () => {
 
                 {(indexingState.isIndexing || isAIPaused) && (
                     <div style={{
-                        backgroundColor: isAIPaused ? '#fffbeb' : '#f5f3ff',
-                        border: `1px solid ${isAIPaused ? '#fde68a' : '#ddd6fe'}`,
+                        backgroundColor: isAIPaused ? '#fffbeb' : (indexingState.activeEngine === 'local' ? '#f0fdf4' : '#f5f3ff'),
+                        border: `1px solid ${isAIPaused ? '#fde68a' : (indexingState.activeEngine === 'local' ? '#bbf7d0' : '#ddd6fe')}`,
                         borderRadius: 'var(--radius)',
                         padding: '16px 20px',
                         marginBottom: '20px',
@@ -230,8 +230,16 @@ const Dashboard = () => {
                     }}>
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                <span style={{ fontSize: '0.9rem', fontWeight: 600, color: isAIPaused ? '#92400e' : '#5b21b6' }}>
-                                    {isAIPaused ? '⏸ Florence-2 AI Paused' : '⚡ Florence-2 Detailed Vision AI'} ({indexingState.current} / {indexingState.total})
+                                <span style={{
+                                    fontSize: '0.9rem',
+                                    fontWeight: 600,
+                                    color: isAIPaused ? '#92400e' : (indexingState.activeEngine === 'local' ? '#166534' : '#5b21b6')
+                                }}>
+                                    {isAIPaused
+                                        ? '⏸ AI Inference Paused'
+                                        : (indexingState.activeEngine === 'local'
+                                            ? '🟢 Memora Local AI (Qwen3-VL-8B)'
+                                            : '⚡ Browser AI Fallback (Florence-2)')} ({indexingState.current} / {indexingState.total})
                                 </span>
                                 {indexingState.isIndexing ? (
                                     <button
@@ -265,14 +273,18 @@ const Dashboard = () => {
                                     </button>
                                 )}
                             </div>
-                            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: isAIPaused ? '#b45309' : '#7c3aed' }}>
-                                🔒 100% Client-Side Privacy • Florence-2-base-ft
+                            <span style={{
+                                fontSize: '0.75rem',
+                                fontWeight: 600,
+                                color: indexingState.activeEngine === 'local' ? '#15803d' : '#7c3aed'
+                            }}>
+                                🔒 100% Client-Side Privacy • {indexingState.activeEngine === 'local' ? 'Loopback (127.0.0.1)' : 'Web Worker'}
                             </span>
                         </div>
                         <div style={{
                             height: '8px',
                             width: '100%',
-                            backgroundColor: isAIPaused ? '#fef3c7' : '#ede9fe',
+                            backgroundColor: isAIPaused ? '#fef3c7' : (indexingState.activeEngine === 'local' ? '#dcfce7' : '#ede9fe'),
                             borderRadius: '4px',
                             overflow: 'hidden',
                             marginBottom: '8px'
@@ -280,11 +292,15 @@ const Dashboard = () => {
                             <div style={{
                                 height: '100%',
                                 width: `${indexingState.total ? (indexingState.current / indexingState.total) * 100 : 0}%`,
-                                backgroundColor: isAIPaused ? '#f59e0b' : '#7c3aed',
+                                backgroundColor: isAIPaused ? '#f59e0b' : (indexingState.activeEngine === 'local' ? '#22c55e' : '#7c3aed'),
                                 transition: 'width 0.3s ease'
                             }} />
                         </div>
-                        <p style={{ fontSize: '0.8rem', color: isAIPaused ? '#92400e' : '#6d28d9', margin: 0 }}>
+                        <p style={{
+                            fontSize: '0.8rem',
+                            color: isAIPaused ? '#92400e' : (indexingState.activeEngine === 'local' ? '#166534' : '#6d28d9'),
+                            margin: 0
+                        }}>
                             {indexingState.modelStatus} {indexingState.currentFile ? `(${indexingState.currentFile})` : ''}
                         </p>
                     </div>
