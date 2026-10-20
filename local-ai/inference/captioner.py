@@ -81,14 +81,21 @@ async def generate_caption(
                     ]
                 }
             ]
-            # Cap max_tokens to 50 for rapid CPU generation (crisp search captions)
-            effective_max_tokens = min(max_tokens, 50) if max_tokens else 50
-            response = llm.create_chat_completion(
-                messages=messages,
-                max_tokens=effective_max_tokens,
-                temperature=0.1,
-                stop=["\n\n", "\n", "User:", "<|im_end|>", "<|endoftext|>"]
-            )
+            # Full token budget for deep, comprehensive, multi-sentence retrieval captions
+            effective_max_tokens = max_tokens if max_tokens else 120
+
+            # Run blocking C++ model inference in worker thread pool so FastAPI event loop remains responsive
+            loop = asyncio.get_running_loop()
+
+            def _inference_worker():
+                return llm.create_chat_completion(
+                    messages=messages,
+                    max_tokens=effective_max_tokens,
+                    temperature=0.2,
+                    stop=["<|im_end|>", "<|endoftext|>", "User:"]
+                )
+
+            response = await loop.run_in_executor(None, _inference_worker)
             caption_text = response["choices"][0]["message"]["content"].strip()
 
             # Clean any leftover wrapper quotes or reasoning tags

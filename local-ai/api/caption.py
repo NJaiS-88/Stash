@@ -16,7 +16,7 @@ async def caption_image(
     image: UploadFile = File(..., description="Binary image file to caption"),
     prompt: Optional[str] = Form(None, description="Optional custom retrieval prompt"),
     imageId: Optional[str] = Form(None, description="Client-side unique image identifier"),
-    maxTokens: int = Form(45, description="Maximum token length for caption")
+    maxTokens: int = Form(120, description="Maximum token length for caption")
 ):
     """
     Performs local VLM inference on uploaded image binary.

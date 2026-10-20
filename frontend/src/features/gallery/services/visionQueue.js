@@ -265,6 +265,7 @@ class VisionQueueManager {
                             engine: 'local',
                             model: localRes.model || 'qwen3-vl-8b-instruct'
                         };
+                        console.log(`[VisionQueue] ✅ Generated via Local Qwen3-VL (${img.fileName}): "${result.caption.slice(0, 70)}..."`);
                     } catch (localErr) {
                         console.warn('[VisionQueue] Local AI Helper request failed, falling back to Browser AI:', localErr);
                         // Seamless mid-queue fallback to browser Web Worker

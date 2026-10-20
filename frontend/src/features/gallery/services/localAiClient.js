@@ -8,7 +8,14 @@ export const LOCAL_AI_DEFAULT_PORT = 48124;
 export const LOCAL_AI_BASE_URL = `http://127.0.0.1:${LOCAL_AI_DEFAULT_PORT}`;
 export const LOCAL_AI_SETUP_DOWNLOAD_URL = '/downloads/StashLocalAI-Setup.exe';
 
-export const SEARCH_RETRIEVAL_PROMPT = 'Describe this image with key subjects, objects, legible text, and scene details for search retrieval. Concise and factual.';
+export const SEARCH_RETRIEVAL_PROMPT = `Generate one concise, highly detailed factual caption for this image optimized for search retrieval.
+
+Describe all visible information accurately:
+- Image type & subjects: people, animals, landscapes, cityscapes, food, vehicles, objects, art, screenshots, documents, or UI.
+- Visible text/titles: transcribe key legible text, titles, brand names, or error messages (for screenshots, receipts, signs, or slides).
+- Context & attributes: activities, scene/setting, colors, lighting, materials, and layout.
+
+Do not speculate on hidden identities, unverified relationships, or unseen facts. Return only the caption.`;
 
 const STOP_WORDS = new Set([
     'a', 'an', 'the', 'in', 'on', 'at', 'is', 'are', 'was', 'were', 'it', 'its',
@@ -25,14 +32,14 @@ export function extractKeywords(caption) {
 
 /**
  * Checks if the Stash Local AI Helper is running and healthy on 127.0.0.1.
- * Fast 1-second timeout prevents any stalling if the helper is not installed.
+ * 2.5-second timeout ensures health check never falsely fails under heavy CPU load.
  *
  * @returns {Promise<{ available: boolean, model?: string, device?: string, version?: string }>}
  */
 export async function checkLocalAiHealth() {
     try {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 1200);
+        const timeoutId = setTimeout(() => controller.abort(), 2500);
 
         const res = await fetch(`${LOCAL_AI_BASE_URL}/health`, {
             method: 'GET',
@@ -50,7 +57,7 @@ export async function checkLocalAiHealth() {
                 modelReady: Boolean(data.modelReady),
                 status: data.status,
                 model: data.model || 'qwen3-vl-8b-instruct',
-                device: data.device || 'gpu',
+                device: data.device || 'cpu',
                 version: data.version || '1.0.0'
             };
         }
@@ -92,29 +99,39 @@ export async function requestLocalCaption(fileBlob, fileName = 'image.jpg', opti
     const formData = new FormData();
     formData.append('image', fileBlob, fileName);
     formData.append('prompt', options.prompt || SEARCH_RETRIEVAL_PROMPT);
-    formData.append('maxTokens', options.maxTokens || 45);
+    formData.append('maxTokens', options.maxTokens || 120);
 
-    const res = await fetch(`${LOCAL_AI_BASE_URL}/caption`, {
-        method: 'POST',
-        body: formData
-    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s timeout for CPU inference
 
-    if (!res.ok) {
-        const errText = await res.text().catch(() => 'Unknown error');
-        throw new Error(`Local AI Helper error (${res.status}): ${errText}`);
+    try {
+        const res = await fetch(`${LOCAL_AI_BASE_URL}/caption`, {
+            method: 'POST',
+            body: formData,
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (!res.ok) {
+            const errText = await res.text().catch(() => 'Unknown error');
+            throw new Error(`Local AI Helper error (${res.status}): ${errText}`);
+        }
+
+        const data = await res.json();
+        const caption = (data.caption || '').trim();
+        const keywords = data.keywords && data.keywords.length > 0
+            ? data.keywords
+            : extractKeywords(caption);
+
+        return {
+            caption,
+            keywords,
+            model: data.model || 'qwen3-vl-8b-instruct',
+            engine: 'local',
+            durationMs: data.durationMs || 0
+        };
+    } catch (err) {
+        clearTimeout(timeoutId);
+        throw err;
     }
-
-    const data = await res.json();
-    const caption = (data.caption || '').trim();
-    const keywords = data.keywords && data.keywords.length > 0
-        ? data.keywords
-        : extractKeywords(caption);
-
-    return {
-        caption,
-        keywords,
-        model: data.model || 'qwen3-vl-8b-instruct',
-        engine: 'local',
-        durationMs: data.durationMs || 0
-    };
 }
