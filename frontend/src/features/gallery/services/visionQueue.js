@@ -10,7 +10,8 @@ import {
     updateImageAI,
     getPendingImages,
     getAllFolders,
-    resetStaleProcessingImages
+    resetStaleProcessingImages,
+    saveImageRecord
 } from './galleryDb';
 import { resolveFileByPath } from './fileSystem';
 import { describeImage } from './visionModel';
@@ -168,8 +169,32 @@ class VisionQueueManager {
                 folder = folderMap.get(img.folderId);
             }
 
+            // Fallback: If folder ID mismatch (e.g. folder was reconnected with new UUID), check any available handle
             if (!folder?.handle) {
-                console.warn('[VisionQueue] Missing handle for folder:', img.folderId);
+                for (const candidate of folderMap.values()) {
+                    if (candidate?.handle) {
+                        try {
+                            const candidateFile = await resolveFileByPath(candidate.handle, img.relativePath);
+                            if (candidateFile) {
+                                folder = candidate;
+                                img.folderId = candidate.id;
+                                break;
+                            }
+                        } catch {
+                            // continue checking
+                        }
+                    }
+                }
+            }
+
+            if (!folder?.handle) {
+                // Folder genuinely missing or permission revoked; mark failed to prevent continuous infinite loop
+                await saveImageRecord({
+                    ...img,
+                    captionStatus: 'failed',
+                    indexingStatus: 'failed',
+                    captionError: 'Folder disconnected or handle unavailable'
+                });
                 continue;
             }
 
@@ -183,6 +208,12 @@ class VisionQueueManager {
                 const file = await resolveFileByPath(folder.handle, img.relativePath);
                 if (!file) {
                     console.warn('[VisionQueue] File could not be resolved:', img.relativePath);
+                    await saveImageRecord({
+                        ...img,
+                        status: 'missing',
+                        captionStatus: 'failed',
+                        indexingStatus: 'failed'
+                    });
                     continue;
                 }
 
