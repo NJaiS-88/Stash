@@ -6,16 +6,25 @@ Compiles standalone StashLocalAI.exe with embedded Uvicorn and FastAPI runtime.
 
 import sys
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_all
 
 block_cipher = None
 project_root = Path(SPECPATH).parent.resolve()
 
+# Automatically collect all compiled DLLs, shared libs, and modules for llama-cpp-python
+try:
+    llama_datas, llama_binaries, llama_hiddenimports = collect_all('llama_cpp')
+except Exception:
+    llama_datas, llama_binaries, llama_hiddenimports = [], [], []
+
 a = Analysis(
     [str(project_root / 'main.py')],
     pathex=[str(project_root)],
-    binaries=[],
-    datas=[],
+    binaries=llama_binaries,
+    datas=llama_datas,
     hiddenimports=[
+        'llama_cpp',
+        'llama_cpp.llama_chat_format',
         'uvicorn',
         'uvicorn.logging',
         'uvicorn.loops',
@@ -42,7 +51,7 @@ a = Analysis(
         'api.health',
         'api.status',
         'api.caption',
-    ],
+    ] + llama_hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
