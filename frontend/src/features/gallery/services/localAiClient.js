@@ -6,9 +6,7 @@
 
 export const LOCAL_AI_DEFAULT_PORT = 48124;
 export const LOCAL_AI_BASE_URL = `http://127.0.0.1:${LOCAL_AI_DEFAULT_PORT}`;
-export const LOCAL_AI_SETUP_DOWNLOAD_URL = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')
-    ? '/downloads/StashLocalAI-Setup.exe'
-    : 'https://github.com/NJaiS-88/Stash/releases/latest/download/StashLocalAI-Setup.exe';
+export const LOCAL_AI_SETUP_DOWNLOAD_URL = '/downloads/StashLocalAI-Setup.exe';
 
 export const SEARCH_RETRIEVAL_PROMPT = `Generate one concise, highly detailed factual caption for this image optimized for search retrieval.
 

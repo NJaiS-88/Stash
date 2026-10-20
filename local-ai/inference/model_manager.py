@@ -70,13 +70,19 @@ class ModelManager:
         return MODELS_DIR / self.model_spec["mmproj_filename"]
 
     def _check_installed_files(self) -> bool:
-        """Checks if required model weights exist locally."""
+        """Checks if required model weights and multimodal vision projector exist locally."""
         if os.environ.get("STASH_DEV_MODE") == "1":
             self.status = ModelStatus.READY
             return True
-        if self.model_path.exists() and self.model_path.stat().st_size > 100 * 1024 * 1024:
+
+        has_model = self.model_path.exists() and self.model_path.stat().st_size > 100 * 1024 * 1024
+        mmproj_name = self.model_spec.get("mmproj_filename")
+        has_mmproj = (not mmproj_name) or (self.mmproj_path.exists() and self.mmproj_path.stat().st_size > 50 * 1024 * 1024)
+
+        if has_model and has_mmproj:
             self.status = ModelStatus.READY
             return True
+
         self.status = ModelStatus.NOT_INSTALLED
         return False
 
@@ -225,7 +231,12 @@ class ModelManager:
             from llama_cpp import Llama
 
             chat_handler = None
-            if self.mmproj_path.exists():
+            mmproj_name = self.model_spec.get("mmproj_filename")
+            if mmproj_name:
+                if not (self.mmproj_path.exists() and self.mmproj_path.stat().st_size > 50 * 1024 * 1024):
+                    raise RuntimeError(
+                        f"Multimodal projector {mmproj_name} is still downloading. Please wait for download to finish."
+                    )
                 try:
                     from llama_cpp.llama_chat_format import Qwen25VLChatHandler
                     chat_handler = Qwen25VLChatHandler(clip_model_path=str(self.mmproj_path))
@@ -240,13 +251,27 @@ class ModelManager:
                         except ImportError:
                             chat_handler = None
 
-            self._llm = Llama(
-                model_path=str(self.model_path),
-                chat_handler=chat_handler,
-                n_ctx=2048,
-                n_gpu_layers=-1,  # Offload all layers to GPU (Vulkan/CUDA) if available
-                verbose=False
-            )
+            # Qwen25VLChatHandler strictly requires logits_all=True and minimum 4096 context tokens
+            try:
+                self._llm = Llama(
+                    model_path=str(self.model_path),
+                    chat_handler=chat_handler,
+                    n_ctx=4096,
+                    logits_all=True,
+                    n_gpu_layers=-1,  # Attempt GPU offloading
+                    verbose=False
+                )
+            except Exception as gpu_err:
+                logger.warning(f"GPU initialization skipped ({gpu_err}); running on CPU (n_gpu_layers=0)...")
+                self._llm = Llama(
+                    model_path=str(self.model_path),
+                    chat_handler=chat_handler,
+                    n_ctx=4096,
+                    logits_all=True,
+                    n_gpu_layers=0,
+                    verbose=False
+                )
+
             logger.info("Model successfully loaded into memory.")
             return self._llm
         except ImportError as err:

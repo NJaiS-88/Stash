@@ -70,5 +70,5 @@ Describe all visible information accurately:
 Do not speculate on hidden identities, unverified relationships, or unseen facts. Return only the caption."""
 
 # Image Preprocessing Settings
-MAX_IMAGE_DIMENSION: int = 1344  # Optimal size for Qwen-VL without excessive VRAM
+MAX_IMAGE_DIMENSION: int = 896  # Fast, optimal size for Qwen-VL with low memory footprint
 JPEG_QUALITY: int = 88
