@@ -68,35 +68,25 @@ async def generate_caption(
             b64_image = base64.b64encode(jpeg_bytes).decode("utf-8")
             data_uri = f"data:image/jpeg;base64,{b64_image}"
 
-            # 2. Ensure model is loaded
+            # 2. Ensure model is loaded (raises error if llama-cpp is missing, triggering browser fallback)
             llm = model_mgr.load_model()
 
-            caption_text = ""
-
-            # Check if running mock/fallback or real llama-cpp
-            if isinstance(llm, str) and llm == "MOCK_VLM_RUNTIME":
-                # Simulated high-quality caption for test/dev environment
-                caption_text = (
-                    "A vibrant scene featuring clear outdoor lighting, detailed foreground subjects, "
-                    "and natural surroundings suitable for search indexing."
-                )
-            else:
-                # Real llama-cpp vision chat completion
-                messages = [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": data_uri}},
-                            {"type": "text", "text": final_prompt}
-                        ]
-                    }
-                ]
-                response = llm.create_chat_completion(
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    temperature=0.2,
-                )
-                caption_text = response["choices"][0]["message"]["content"].strip()
+            # Real llama-cpp vision chat completion
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": data_uri}},
+                        {"type": "text", "text": final_prompt}
+                    ]
+                }
+            ]
+            response = llm.create_chat_completion(
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.2,
+            )
+            caption_text = response["choices"][0]["message"]["content"].strip()
 
             # Clean any leftover wrapper quotes or reasoning tags
             caption_text = re.sub(r"^[\"']|[\"']$", "", caption_text).strip()

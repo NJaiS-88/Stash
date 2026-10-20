@@ -222,29 +222,39 @@ class ModelManager:
 
         logger.info(f"Loading model into memory from {self.model_path}...")
         try:
-            # We use llama_cpp if installed
             from llama_cpp import Llama
-            from llama_cpp.llama_chat_format import Qwen2VLHandler
 
-            # Check if mmproj exists for vision projector
             chat_handler = None
             if self.mmproj_path.exists():
-                chat_handler = Qwen2VLHandler(clip_model_path=str(self.mmproj_path))
+                try:
+                    from llama_cpp.llama_chat_format import Qwen25VLChatHandler
+                    chat_handler = Qwen25VLChatHandler(clip_model_path=str(self.mmproj_path))
+                except ImportError:
+                    try:
+                        from llama_cpp.llama_chat_format import Qwen2VLChatHandler
+                        chat_handler = Qwen2VLChatHandler(clip_model_path=str(self.mmproj_path))
+                    except ImportError:
+                        try:
+                            from llama_cpp.llama_chat_format import Llava15ChatHandler
+                            chat_handler = Llava15ChatHandler(clip_model_path=str(self.mmproj_path))
+                        except ImportError:
+                            chat_handler = None
 
             self._llm = Llama(
                 model_path=str(self.model_path),
                 chat_handler=chat_handler,
                 n_ctx=2048,
-                n_gpu_layers=-1,  # Offload all layers to GPU (Vulkan/CUDA)
+                n_gpu_layers=-1,  # Offload all layers to GPU (Vulkan/CUDA) if available
                 verbose=False
             )
             logger.info("Model successfully loaded into memory.")
             return self._llm
-        except ImportError:
-            logger.warning("llama_cpp not imported; running in lightweight runtime mode.")
-            # Mock / CPU fallback container
-            self._llm = "MOCK_VLM_RUNTIME"
-            return self._llm
+        except ImportError as err:
+            logger.error(f"llama-cpp-python runtime is not installed: {err}")
+            raise RuntimeError(
+                f"llama-cpp-python is not installed or missing dependencies: {err}. "
+                "Install it with: pip install llama-cpp-python"
+            )
         except Exception as e:
             logger.error(f"Failed to load model weights: {e}")
             raise

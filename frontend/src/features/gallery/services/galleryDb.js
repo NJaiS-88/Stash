@@ -395,7 +395,8 @@ export async function markBrowserCaptionsForUpgrade() {
         const browserImages = available.filter(img =>
             img.captionEngine === 'browser' ||
             img.captionModel === 'florence-2-base-ft' ||
-            img.captionModel === 'vit-gpt2'
+            img.captionModel === 'vit-gpt2' ||
+            (img.caption && img.caption.includes('A vibrant scene featuring clear outdoor lighting'))
         );
 
         if (browserImages.length === 0) return 0;
