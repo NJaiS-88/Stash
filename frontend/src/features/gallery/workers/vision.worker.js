@@ -77,7 +77,7 @@ async function initModel() {
 
         try {
             // Primary attempt: Florence-2-base-ft with mixed-precision / WebGPU
-            pipelineInstance = await pipeline('image-text-to-text', modelId, {
+            pipelineInstance = await pipeline('image-to-text', modelId, {
                 device: activeDevice,
                 dtype: hasWebGPU ? {
                     embed_tokens: 'fp16',

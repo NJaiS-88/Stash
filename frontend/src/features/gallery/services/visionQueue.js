@@ -126,7 +126,7 @@ class VisionQueueManager {
         } else {
             this.status.activeEngine = 'browser';
             this.status.activeModel = 'Florence-2-base-ft';
-            console.log('[VisionQueue] Tier 1 Offline. Using Tier 2 zero-install Browser AI (Florence-2 Web Worker)');
+            console.log('[VisionQueue] Stash Local AI not ready yet (offline or downloading). Using Browser AI (Florence-2 Web Worker)');
             this.initWorker();
         }
 

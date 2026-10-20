@@ -69,7 +69,7 @@ export async function getVisionPipeline(onProgress = null) {
             const modelId = 'onnx-community/Florence-2-base-ft';
 
             try {
-                captionPipeline = await pipeline('image-text-to-text', modelId, {
+                captionPipeline = await pipeline('image-to-text', modelId, {
                     device: activeDevice,
                     dtype: hasWebGPU ? {
                         embed_tokens: 'fp16',

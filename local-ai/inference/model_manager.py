@@ -119,51 +119,51 @@ class ModelManager:
 
         repo_id = self.model_spec["repo_id"]
         filename = self.model_spec["filename"]
-        url = f"https://huggingface.co/{repo_id}/resolve/main/{filename}?download=true"
+        mmproj_filename = self.model_spec.get("mmproj_filename")
 
-        temp_target = self.model_path.with_suffix(".download")
+        def _download_single(fname: str, target: Path):
+            temp_target = target.with_suffix(".download")
+            url = f"https://huggingface.co/{repo_id}/resolve/main/{fname}?download=true"
+            logger.info(f"Downloading {fname} from {url} to {temp_target}...")
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "StashLocalAI/1.0.0"}
+            )
+            with urllib.request.urlopen(req) as response, open(temp_target, "wb") as out_file:
+                total_size = int(response.info().get("Content-Length", 0))
+                self.total_bytes = total_size
+                downloaded = 0
+                chunk_size = 1024 * 1024  # 1MB chunks
+
+                while True:
+                    chunk = response.read(chunk_size)
+                    if not chunk:
+                        break
+                    out_file.write(chunk)
+                    downloaded += len(chunk)
+                    self.downloaded_bytes = downloaded
+
+                    if total_size > 0:
+                        self.download_progress = (downloaded / total_size) * 100.0
+                        if progress_callback:
+                            progress_callback(self.download_progress)
+
+            if target.exists():
+                try:
+                    target.unlink()
+                except Exception:
+                    pass
+            temp_target.rename(target)
 
         def _download_worker():
             try:
-                logger.info(f"Downloading model from {url} to {temp_target}...")
-                req = urllib.request.Request(
-                    url,
-                    headers={"User-Agent": "StashLocalAI/1.0.0"}
-                )
-                with urllib.request.urlopen(req) as response, open(temp_target, "wb") as out_file:
-                    total_size = int(response.info().get("Content-Length", 0))
-                    self.total_bytes = total_size
-                    downloaded = 0
-                    chunk_size = 1024 * 1024  # 1MB chunks
+                # 1. Download main model weights if not already present
+                if not (self.model_path.exists() and self.model_path.stat().st_size > 100 * 1024 * 1024):
+                    _download_single(filename, self.model_path)
 
-                    hasher = hashlib.sha256()
-
-                    while True:
-                        chunk = response.read(chunk_size)
-                        if not chunk:
-                            break
-                        out_file.write(chunk)
-                        hasher.update(chunk)
-                        downloaded += len(chunk)
-                        self.downloaded_bytes = downloaded
-
-                        if total_size > 0:
-                            self.download_progress = (downloaded / total_size) * 100.0
-                            if progress_callback:
-                                progress_callback(self.download_progress)
-
-                # Verification
-                self.status = ModelStatus.VERIFYING
-                expected_sha = self.model_spec.get("sha256")
-                if expected_sha:
-                    actual_sha = hasher.hexdigest()
-                    if actual_sha.lower() != expected_sha.lower():
-                        raise ValueError(f"Checksum mismatch! Expected {expected_sha}, got {actual_sha}")
-
-                # Atomic replace
-                if self.model_path.exists():
-                    self.model_path.unlink()
-                temp_target.rename(self.model_path)
+                # 2. Download multimodal vision projector if specified and missing
+                if mmproj_filename and not (self.mmproj_path.exists() and self.mmproj_path.stat().st_size > 50 * 1024 * 1024):
+                    _download_single(mmproj_filename, self.mmproj_path)
 
                 self.status = ModelStatus.READY
                 self.download_progress = 100.0
@@ -172,11 +172,6 @@ class ModelManager:
                 self.status = ModelStatus.ERROR
                 self.error_message = str(e)
                 logger.error(f"Download failed: {e}")
-                if temp_target.exists():
-                    try:
-                        temp_target.unlink()
-                    except Exception:
-                        pass
                 raise
 
         loop = asyncio.get_event_loop()

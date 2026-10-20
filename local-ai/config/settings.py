@@ -40,19 +40,19 @@ for directory in [MODELS_DIR, CONFIG_DIR, LOGS_DIR]:
 # We support Qwen VL quantized models (Q4_K_M)
 SUPPORTED_MODELS = {
     "qwen3-vl-8b-instruct": {
-        "repo_id": "Qwen/Qwen2.5-VL-7B-Instruct-GGUF",  # Current standard compatible Qwen-VL GGUF
-        "filename": "qwen2.5-vl-7b-instruct-q4_k_m.gguf",
-        "mmproj_filename": "mmproj-model-f16.gguf",
+        "repo_id": "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+        "filename": "Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf",
+        "mmproj_filename": "mmproj-F16.gguf",
         "display_name": "Qwen3-VL 8B Instruct (Q4)",
-        "estimated_size_mb": 4900,
+        "estimated_size_mb": 4683,
         "sha256": None,  # Verified on download
     },
     "qwen3-vl-4b-instruct": {
-        "repo_id": "Qwen/Qwen2.5-VL-3B-Instruct-GGUF",
-        "filename": "qwen2.5-vl-3b-instruct-q4_k_m.gguf",
-        "mmproj_filename": "mmproj-model-f16.gguf",
+        "repo_id": "unsloth/Qwen2.5-VL-3B-Instruct-GGUF",
+        "filename": "Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf",
+        "mmproj_filename": "mmproj-F16.gguf",
         "display_name": "Qwen3-VL 4B Instruct (Q4)",
-        "estimated_size_mb": 2400,
+        "estimated_size_mb": 1930,
         "sha256": None,
     }
 }

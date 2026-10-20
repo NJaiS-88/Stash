@@ -22,7 +22,7 @@ export default function PrivateAiBanner() {
                 if (!mounted) return;
                 setLocalHealth(health);
 
-                if (health.available) {
+                if (health.connected) {
                     const status = await getLocalAiStatus();
                     if (mounted && status) {
                         setModelStatus(status);
@@ -58,15 +58,25 @@ export default function PrivateAiBanner() {
         setShowDownloadModal(true);
     };
 
-    // If local AI is running and active
-    if (localHealth.available) {
+    // If local AI helper process is connected
+    if (localHealth.connected) {
         const isDownloading = modelStatus?.status === 'DOWNLOADING';
+        const isError = modelStatus?.status === 'ERROR';
+        const isReady = localHealth.available;
         const progress = modelStatus?.downloadProgress || 0;
+
+        const handleRetryDownload = async () => {
+            try {
+                await fetch('http://127.0.0.1:48124/download-model', { method: 'POST' });
+            } catch (err) {
+                console.warn('Failed to trigger download retry:', err);
+            }
+        };
 
         return (
             <div style={{
-                background: 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)',
-                border: '1px solid #86efac',
+                background: isError ? 'linear-gradient(135deg, #fff1f2 0%, #fee2e2 100%)' : 'linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%)',
+                border: `1px solid ${isError ? '#fca5a5' : '#86efac'}`,
                 borderRadius: 'var(--radius)',
                 padding: '12px 18px',
                 marginBottom: '20px',
@@ -78,19 +88,23 @@ export default function PrivateAiBanner() {
                 boxShadow: '0 2px 8px rgba(22, 101, 52, 0.06)'
             }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <span style={{ fontSize: '1.2rem' }}>🟢</span>
+                    <span style={{ fontSize: '1.2rem' }}>{isError ? '⚠️' : (isReady ? '🟢' : '⏳')}</span>
                     <div>
-                        <div style={{ fontWeight: 600, color: '#166534', fontSize: '0.92rem' }}>
-                            Stash Local AI Active ({localHealth.model || 'Qwen3-VL-8B'})
+                        <div style={{ fontWeight: 600, color: isError ? '#991b1b' : '#166534', fontSize: '0.92rem' }}>
+                            {isReady
+                                ? `Stash Local AI Active (${localHealth.model || 'Qwen3-VL-8B'})`
+                                : (isDownloading ? 'Preparing Private AI: Downloading Weights' : (isError ? 'Private AI: Model Download Pending' : 'Stash Local AI Initializing...'))}
                         </div>
-                        <div style={{ color: '#15803d', fontSize: '0.8rem' }}>
+                        <div style={{ color: isError ? '#b91c1c' : '#15803d', fontSize: '0.8rem' }}>
                             {isDownloading
-                                ? `Preparing Model: Downloading weights (${progress}%)...`
-                                : `Hardware acceleration: ${localHealth.device?.toUpperCase() || 'GPU'} • 100% On-Device Privacy`}
+                                ? `Downloading model weights (${progress}%)... Original photos remain strictly on device.`
+                                : isError
+                                    ? (modelStatus?.errorMessage ? `Download error: ${modelStatus.errorMessage}` : 'Model weights missing. Click retry to begin.')
+                                    : (isReady ? `Hardware acceleration: ${localHealth.device?.toUpperCase() || 'GPU'} • 100% On-Device Privacy` : 'Setting up local inference engine...')}
                         </div>
                         {isDownloading && (
                             <div style={{
-                                width: '220px',
+                                width: '240px',
                                 height: '6px',
                                 backgroundColor: '#bbf7d0',
                                 borderRadius: '3px',
@@ -109,15 +123,24 @@ export default function PrivateAiBanner() {
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    {isError && (
+                        <button
+                            onClick={handleRetryDownload}
+                            className="btn-nav-primary"
+                            style={{ padding: '6px 14px', fontSize: '0.8rem' }}
+                        >
+                            Retry Model Download
+                        </button>
+                    )}
                     <span style={{
                         fontSize: '0.75rem',
-                        backgroundColor: '#bbf7d0',
-                        color: '#14532d',
+                        backgroundColor: isError ? '#fecaca' : '#bbf7d0',
+                        color: isError ? '#7f1d1d' : '#14532d',
                         padding: '4px 10px',
                         borderRadius: '12px',
                         fontWeight: 600
                     }}>
-                        Localhost 127.0.0.1
+                        127.0.0.1:48124
                     </span>
                 </div>
             </div>

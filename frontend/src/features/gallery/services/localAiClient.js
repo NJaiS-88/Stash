@@ -52,15 +52,18 @@ export async function checkLocalAiHealth() {
         if (res.ok) {
             const data = await res.json();
             return {
-                available: true,
+                connected: true,
+                available: Boolean(data.modelReady && data.status === 'ready'),
+                modelReady: Boolean(data.modelReady),
+                status: data.status,
                 model: data.model || 'qwen3-vl-8b-instruct',
                 device: data.device || 'gpu',
                 version: data.version || '1.0.0'
             };
         }
-        return { available: false };
+        return { connected: false, available: false, modelReady: false };
     } catch {
-        return { available: false };
+        return { connected: false, available: false, modelReady: false };
     }
 }
 
