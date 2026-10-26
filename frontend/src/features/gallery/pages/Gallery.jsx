@@ -6,8 +6,10 @@ import GalleryGrid from '../components/GalleryGrid';
 import GallerySearch from '../components/GallerySearch';
 import PrivateAiBanner from '../components/PrivateAiBanner';
 import { useGallery } from '../hooks/useGallery';
+import { isMobileOrTabletDevice } from '../services/fileSystem';
 
 export default function Gallery() {
+    const isMobile = isMobileOrTabletDevice();
     const {
         folders,
         activeFolder,
@@ -65,9 +67,11 @@ export default function Gallery() {
                                     </div>
                                 ))}
                             </div>
-                            <button onClick={addFolder} className="btn-logout" style={{ fontSize: '0.9rem' }}>
-                                + Connect Another Folder
-                            </button>
+                            {!isMobile && (
+                                <button onClick={addFolder} className="btn-logout" style={{ fontSize: '0.9rem' }}>
+                                    + Connect Another Folder
+                                </button>
+                            )}
                         </div>
                     )
                 ) : (

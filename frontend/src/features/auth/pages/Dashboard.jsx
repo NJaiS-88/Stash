@@ -4,8 +4,10 @@ import { useAuth } from '../hooks/useAuth';
 import { useGallery } from '../../gallery/hooks/useGallery';
 import { useNavigate } from 'react-router';
 import PrivateAiBanner from '../../gallery/components/PrivateAiBanner';
+import { isMobileOrTabletDevice } from '../../gallery/services/fileSystem';
 
 const Dashboard = () => {
+    const isMobile = isMobileOrTabletDevice();
     const { user } = useAuth();
     const {
         folders,
@@ -52,6 +54,10 @@ const Dashboard = () => {
 
     const handleReconnect = async (folderId, e) => {
         e.stopPropagation();
+        if (isMobile) {
+            alert('Reconnecting local folders is only supported on desktop or laptop computers (Windows, macOS, Linux).');
+            return;
+        }
         await reconnectFolder(folderId);
     };
 
@@ -61,6 +67,10 @@ const Dashboard = () => {
     };
 
     const handleConnectNew = async () => {
+        if (isMobile) {
+            alert('Connecting local folders is only supported on desktop or laptop computers (Windows, macOS, Linux). Mobile and tablet devices cannot access local folders.');
+            return;
+        }
         const added = await addFolder();
         if (added) {
             navigate('/gallery');
@@ -194,11 +204,16 @@ const Dashboard = () => {
 
                         <button
                             onClick={handleConnectNew}
-                            disabled={loading || scanning || indexingState.isIndexing}
+                            disabled={loading || scanning || indexingState.isIndexing || isMobile}
                             className="btn-nav-primary"
-                            style={{ padding: '10px 18px', fontSize: '0.9rem' }}
+                            style={{
+                                padding: '10px 18px',
+                                fontSize: '0.9rem',
+                                ...(isMobile ? { opacity: 0.6, cursor: 'not-allowed' } : {})
+                            }}
+                            title={isMobile ? 'Connecting local folders requires a desktop or laptop computer' : ''}
                         >
-                            {loading ? 'Connecting...' : '+ Connect New Folder'}
+                            {isMobile ? '💻 Desktop Only' : (loading ? 'Connecting...' : '+ Connect New Folder')}
                         </button>
                     </div>
                 </div>
@@ -382,20 +397,26 @@ const Dashboard = () => {
                         padding: '48px 24px',
                         textAlign: 'center'
                     }}>
-                        <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>📁</div>
+                        <div style={{ fontSize: '2.5rem', marginBottom: '12px' }}>
+                            {isMobile ? '💻' : '📁'}
+                        </div>
                         <h3 style={{ fontSize: '1.1rem', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '6px' }}>
-                            No folders connected yet
+                            {isMobile ? 'Desktop or Laptop Required' : 'No folders connected yet'}
                         </h3>
-                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '20px' }}>
-                            Connect your computer's photo folders to view and manage them locally.
+                        <p style={{ color: 'var(--text-secondary)', fontSize: '0.875rem', marginBottom: '20px', maxWidth: '440px', margin: '0 auto 20px', lineHeight: '1.5' }}>
+                            {isMobile
+                                ? 'Stash securely indexes your local photo folders without uploading them to the cloud. This requires a desktop or laptop browser (Windows, macOS, or Linux). Mobile and tablet devices cannot connect local folders.'
+                                : "Connect your computer's photo folders to view and manage them locally."}
                         </p>
-                        <button
-                            onClick={handleConnectNew}
-                            className="btn-nav-primary"
-                            style={{ padding: '10px 20px', fontSize: '0.9rem' }}
-                        >
-                            Connect Your First Folder
-                        </button>
+                        {!isMobile && (
+                            <button
+                                onClick={handleConnectNew}
+                                className="btn-nav-primary"
+                                style={{ padding: '10px 20px', fontSize: '0.9rem' }}
+                            >
+                                Connect Your First Folder
+                            </button>
+                        )}
                     </div>
                 ) : (
                     <div className="dashboard-grid">
@@ -444,11 +465,19 @@ const Dashboard = () => {
                                         {isUnavailable ? (
                                             <button
                                                 onClick={(e) => handleReconnect(folder.id, e)}
+                                                disabled={isMobile}
                                                 className="btn-nav-primary"
-                                                style={{ flex: 1, fontSize: '0.85rem', padding: '8px 12px', backgroundColor: '#d97706', borderColor: '#b45309' }}
-                                                title="Re-link or re-authorize folder"
+                                                style={{
+                                                    flex: 1,
+                                                    fontSize: '0.85rem',
+                                                    padding: '8px 12px',
+                                                    backgroundColor: '#d97706',
+                                                    borderColor: '#b45309',
+                                                    ...(isMobile ? { opacity: 0.6, cursor: 'not-allowed' } : {})
+                                                }}
+                                                title={isMobile ? 'Reconnecting folders requires a desktop or laptop computer' : 'Re-link or re-authorize folder'}
                                             >
-                                                🔄 Reconnect
+                                                {isMobile ? '💻 Desktop Only' : '🔄 Reconnect'}
                                             </button>
                                         ) : (
                                             <button

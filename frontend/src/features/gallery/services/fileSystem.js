@@ -20,12 +20,46 @@ export function isImageFile(fileName) {
 }
 
 /**
+ * Detects if the current client is a mobile phone or tablet device.
+ * File System Access API directory selection is only supported on desktop/laptop operating systems.
+ * @returns {boolean}
+ */
+export function isMobileOrTabletDevice() {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
+
+    const ua = navigator.userAgent || navigator.vendor || window.opera || '';
+
+    // Check common mobile and tablet user-agents
+    const mobileRegex = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Tablet|Silk|Mobile/i;
+    if (mobileRegex.test(ua)) {
+        return true;
+    }
+
+    // iPadOS 13+ desktop-class browsing UA (reports MacIntel platform with multi-touch)
+    if (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) {
+        return true;
+    }
+
+    // Screen dimensions and touch capability (tablets and phones in any orientation)
+    const hasTouch = ('ontouchstart' in window) || (navigator.maxTouchPoints > 0);
+    if (hasTouch && window.innerWidth <= 1024) {
+        return true;
+    }
+
+    return false;
+}
+
+/**
  * Prompt the user to select a local folder via the browser's File System Access API.
  * @returns {Promise<FileSystemDirectoryHandle|null>}
  */
 export async function selectDirectory() {
+    if (isMobileOrTabletDevice()) {
+        throw new Error('Connecting local folders is only supported on desktop or laptop computers (Windows, macOS, Linux). Mobile and tablet devices cannot access local folders.');
+    }
+
     if (!('showDirectoryPicker' in window)) {
-        throw new Error('Your browser does not support the File System Access API. Please use Chrome, Edge, Brave, or another Chromium-based browser.');
+        throw new Error('Your browser does not support the File System Access API. Please use Chrome, Edge, Brave, or another Chromium-based desktop browser.');
     }
 
     try {
