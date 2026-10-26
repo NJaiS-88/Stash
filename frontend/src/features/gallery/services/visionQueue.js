@@ -295,7 +295,26 @@ class VisionQueueManager {
                         }
                     } catch (localErr) {
                         console.warn(`[VisionQueue] Local AI Helper failed for ${img.fileName}:`, localErr);
-                        // ABSOLUTELY DO NOT FALL BACK TO BROWSER AI! Keep running Local AI for other images!
+                        // PROBE: Did the user shut down or close the Local AI Helper?
+                        const health = await checkLocalAiHealth();
+                        if (!health.available) {
+                            console.warn('[VisionQueue] 🛑 Local AI helper was closed or disconnected. Pausing queue immediately.');
+                            // Revert this image back to pending so it is NEVER marked as failed!
+                            await saveImageRecord({
+                                ...img,
+                                captionStatus: 'pending',
+                                queuePriority: 3,
+                                processingStartedAt: null,
+                                indexingStatus: 'pending'
+                            });
+                            this.isPaused = true;
+                            this.isRunning = false;
+                            this.status.isIndexing = false;
+                            this.status.isPaused = true;
+                            this.status.modelStatus = 'Local AI service closed. Paused until Local AI starts.';
+                            this.notify();
+                            return; // Stop immediately! Do NOT mark remaining photos as failed!
+                        }
                     }
                 }
 

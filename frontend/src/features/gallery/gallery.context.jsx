@@ -1,6 +1,7 @@
 import { createContext, useState, useEffect } from 'react';
 import { visionQueue } from './services/visionQueue';
 import { getAllFolders, resetStaleProcessingImages, getPendingImages } from './services/galleryDb';
+import { checkLocalAiHealth } from './services/localAiClient';
 
 const GalleryContext = createContext();
 
@@ -20,23 +21,26 @@ export const GalleryProvider = ({ children }) => {
 
     // Autonomous background daemon: runs automatically every time website is loaded or refreshed
     useEffect(() => {
+        let mounted = true;
+
         const autoBootBackgroundAI = async () => {
             try {
-                // 1. Phase 21 Crash/Close Recovery: Reset any interrupted jobs from previous sessions
+                // 1. Crash/Close Recovery: Reset any interrupted or failed jobs without captions back to pending
                 const recovered = await resetStaleProcessingImages({ forceAll: true });
                 if (recovered > 0) {
-                    console.log(`[Stash AI Daemon] Stale-job recovery: reset ${recovered} interrupted image(s) -> pending.`);
+                    console.log(`[Stash AI Daemon] Stale-job recovery: reset ${recovered} uncaptioned image(s) -> pending.`);
                 }
 
                 // 2. Fetch all connected folders
                 const savedFolders = await getAllFolders();
-                if (savedFolders && savedFolders.length > 0) {
+                if (savedFolders && savedFolders.length > 0 && mounted) {
                     setFolders(savedFolders);
 
-                    // 3. Check for any pending photos across all folders
-                    const pending = await getPendingImages();
+                    // 3. Probe Local AI and check for unindexed photos
+                    const health = await checkLocalAiHealth();
+                    const pending = await getPendingImages({ isLocalAiAvailable: health.available });
                     if (pending && pending.length > 0) {
-                        console.log(`[Stash AI Daemon] Auto-starting background AI inference for ${pending.length} unindexed photos...`);
+                        console.log(`[Stash AI Daemon] Auto-starting AI inference for ${pending.length} unindexed photos...`);
                         visionQueue.start(savedFolders);
                     } else {
                         console.log('[Stash AI Daemon] All connected photos are already indexed.');
@@ -48,6 +52,32 @@ export const GalleryProvider = ({ children }) => {
         };
 
         autoBootBackgroundAI();
+
+        // 4. Autonomous Watchdog: Periodically checks if Local AI was started while website is open
+        const watchdogInterval = setInterval(async () => {
+            if (!mounted) return;
+            // Skip check if queue is already actively running
+            if (visionQueue.isRunning && !visionQueue.isPaused) return;
+
+            try {
+                const health = await checkLocalAiHealth();
+                if (health.available) {
+                    const pending = await getPendingImages({ isLocalAiAvailable: true });
+                    if (pending && pending.length > 0) {
+                        console.log(`[Stash AI Watchdog] 🚀 Local AI detected online! Auto-starting indexing for ${pending.length} remaining images.`);
+                        const currentFolders = await getAllFolders();
+                        visionQueue.start(currentFolders);
+                    }
+                }
+            } catch {
+                // Ignore silent loopback probe errors
+            }
+        }, 4000);
+
+        return () => {
+            mounted = false;
+            clearInterval(watchdogInterval);
+        };
     }, []);
 
     return (

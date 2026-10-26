@@ -434,21 +434,14 @@ export async function purgeMissingImages() {
 export async function getPendingImages({ isLocalAiAvailable = false } = {}) {
     try {
         const available = await getAvailableImages();
-        const now = Date.now();
         return available.filter(img => {
             if (img.status === 'missing') return false;
             const hasCaption = Boolean(img.caption && typeof img.caption === 'string' && img.caption.trim().length > 0);
 
-            // 1. Never captioned / pending
-            if (!hasCaption && (!img.captionStatus || img.captionStatus === 'pending')) return true;
+            // 1. Any photo without a completed caption needs visual AI indexing!
+            if (!hasCaption) return true;
 
-            // 2. Interrupted/stale processing jobs from dead sessions (45-second safety threshold)
-            if (!hasCaption && img.captionStatus === 'processing' && (!img.processingStartedAt || (now - img.processingStartedAt > 45000))) return true;
-
-            // 3. Retryable failed jobs (Priority 4)
-            if (!hasCaption && img.captionStatus === 'failed' && (img.retryCount || 0) < 3) return true;
-
-            // 4. Browser captions eligible for local AI upgrade (Priority 5)
+            // 2. Browser captions eligible for local AI upgrade (Priority 5)
             if (isLocalAiAvailable && hasCaption && (
                 img.captionEngine === 'browser' ||
                 img.captionModel === 'florence-2-base-ft' ||
@@ -776,21 +769,20 @@ export async function resetStaleProcessingImages(optionsOrMaxAge = 300000) {
                 }
 
                 const isProcessing = record.captionStatus === 'processing' || record.indexingStatus === 'processing';
-                if (isProcessing) {
-                    const started = record.processingStartedAt || 0;
-                    const isStale = forceAll || (now - started > maxAgeMs);
+                const isFailed = record.captionStatus === 'failed';
+                const started = record.processingStartedAt || 0;
+                const isStale = forceAll || isFailed || (now - started > maxAgeMs);
 
-                    if (isStale) {
-                        record.captionStatus = 'pending';
-                        record.indexingStatus = 'pending';
-                        record.processingStartedAt = null;
-                        // Restore queue priority if missing
-                        if (!record.queuePriority) {
-                            record.queuePriority = 3;
-                        }
-                        cursor.update(record);
-                        count++;
+                if (isProcessing || (forceAll && isFailed) || isStale) {
+                    record.captionStatus = 'pending';
+                    record.indexingStatus = 'pending';
+                    record.processingStartedAt = null;
+                    record.retryCount = 0;
+                    if (!record.queuePriority) {
+                        record.queuePriority = 3;
                     }
+                    cursor.update(record);
+                    count++;
                 }
 
                 cursor.continue();
@@ -861,16 +853,13 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
                     );
 
                     // Uncaptioned photos need captioning!
+                    // Claim if never captioned or if stale processing (> 30s)
                     const isPending = !hasCaption && (
-                        !rec.captionStatus ||
-                        rec.captionStatus === 'pending' ||
-                        (rec.captionStatus === 'processing' && (now - (rec.processingStartedAt || 0) > 45000))
+                        rec.captionStatus !== 'processing' ||
+                        (now - (rec.processingStartedAt || 0) > 30000)
                     );
 
-                    // Retryable failures (< 3 retries, 15s backoff)
-                    const isRetryableFailed = !hasCaption && rec.captionStatus === 'failed' && (rec.retryCount || 0) < 3 && (now - (rec.processingStartedAt || 0) > 15000);
-
-                    if (isPending || isEligibleUpgrade || isRetryableFailed) {
+                    if (isPending || isEligibleUpgrade) {
                         rec.captionStatus = 'processing';
                         rec.indexingStatus = 'processing';
                         rec.processingStartedAt = now;
