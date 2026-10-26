@@ -184,9 +184,9 @@ export default function AiIndexingBanner() {
                 }}>
                     {isAIPaused
                         ? 'Inference paused by user. Click Resume to continue.'
-                        : (indexingState.currentFile
+                        : (indexingState.modelStatus || (indexingState.currentFile
                             ? `Analyzing ${indexingState.currentFile}...`
-                            : (indexingState.modelStatus || 'Processing visual embeddings...'))}
+                            : 'Processing visual embeddings...'))}
                 </span>
 
                 <span style={{ opacity: 0.85, fontSize: '0.72rem' }}>

@@ -13,9 +13,11 @@ import {
     resetStaleProcessingImages,
     saveImageRecord,
     markBrowserCaptionsForUpgrade,
-    getExistingCaptionByContentHash
+    getExistingCaptionByContentHash,
+    getQueueStats
 } from './galleryDb';
 import { resolveFileByPath } from './fileSystem';
+import { computeFileHash } from './crypto';
 import { checkLocalAiHealth, requestLocalCaption } from './localAiClient';
 
 class VisionQueueManager {
@@ -138,11 +140,13 @@ class VisionQueueManager {
         }
 
         const isLocalAvailable = this.status.activeEngine === 'local';
+        const stats = await getQueueStats();
         const pendingList = await getPendingImages({ isLocalAiAvailable: isLocalAvailable });
+
         this.status.isIndexing = true;
         this.status.isPaused = false;
-        this.status.total = pendingList.length;
-        this.status.current = 0;
+        this.status.total = stats.total > 0 ? stats.total : pendingList.length;
+        this.status.current = stats.completed;
         this.status.modelStatus = pendingList.length > 0
             ? `Starting AI queue using ${this.status.activeEngine === 'local' ? 'Local Qwen3-VL' : 'Browser AI'}...`
             : 'All photos indexed.';
@@ -161,39 +165,9 @@ class VisionQueueManager {
         let processedCount = 0;
 
         while (this.isRunning && !this.isPaused) {
-            // Mid-queue hot promotion: If running in browser mode, periodically check if Local AI finished downloading
-            if (this.status.activeEngine === 'browser' && processedCount > 0 && processedCount % 2 === 0) {
-                const health = await checkLocalAiHealth();
-                if (health.available) {
-                    this.status.activeEngine = 'local';
-                    this.status.activeModel = health.model || 'Qwen3-VL-8B-Instruct';
-                    console.log('[VisionQueue] Local AI is now ready! Promoted active engine to Local Qwen3-VL.');
-                    const upgraded = await markBrowserCaptionsForUpgrade();
-                    if (upgraded > 0) {
-                        const refreshed = await getPendingImages();
-                        this.status.total = refreshed.length + processedCount;
-                    }
-                }
-            }
-
-            // Claim next available pending image atomically following 5-tier queue priority
+            // Claim next available pending image atomically following 5-tier queue priority (O(1) indexed lookup)
             const img = await claimNextPendingImage({ isLocalAiAvailable: this.status.activeEngine === 'local' });
             if (!img) {
-                // If we ran in browser mode, check if local AI became ready to upgrade earlier images
-                if (this.status.activeEngine === 'browser') {
-                    const health = await checkLocalAiHealth();
-                    if (health.available) {
-                        this.status.activeEngine = 'local';
-                        this.status.activeModel = health.model || 'Qwen3-VL-8B-Instruct';
-                        const upgraded = await markBrowserCaptionsForUpgrade();
-                        if (upgraded > 0) {
-                            console.log(`[VisionQueue] Browser pass done. Upgrading ${upgraded} photos to Qwen3-VL.`);
-                            const refreshed = await getPendingImages();
-                            this.status.total = refreshed.length + processedCount;
-                            continue;
-                        }
-                    }
-                }
                 // No more pending images
                 break;
             }
@@ -239,10 +213,10 @@ class VisionQueueManager {
                 continue;
             }
 
-            this.status.current = ++processedCount;
+            processedCount++;
             this.status.currentFile = img.fileName;
             const engineLabel = this.status.activeEngine === 'local' ? 'Local Qwen3-VL-8B' : 'Browser AI';
-            this.status.modelStatus = `Analyzing ${img.fileName} (${this.status.current}/${this.status.total}) via ${engineLabel}...`;
+            this.status.modelStatus = `Analyzing ${img.fileName} (${this.status.current + 1}/${this.status.total}) via ${engineLabel}...`;
             this.notify();
 
             try {
@@ -264,6 +238,15 @@ class VisionQueueManager {
                 let result = null;
 
                 // ---------------- STEP 0: INSTANT HASH DEDUPLICATION ----------------
+                // Ensure contentHash is present (computed lazily in microseconds if missing)
+                if (!img.contentHash && file) {
+                    try {
+                        img.contentHash = await computeFileHash(file);
+                    } catch (hashErr) {
+                        console.warn('[VisionQueue] Hash computation skipped:', hashErr);
+                    }
+                }
+
                 // If this image shares the same SHA-256 hash as an already-captioned image, reuse it in 0ms!
                 if (img.contentHash) {
                     const existingMatch = await getExistingCaptionByContentHash(img.contentHash);
@@ -271,6 +254,7 @@ class VisionQueueManager {
                         console.log(`[VisionQueue] ⚡ Instant Hash Reuse for ${img.fileName}: Reusing existing caption from ${existingMatch.fileName}`);
                         result = {
                             imageId: img.imageId,
+                            contentHash: img.contentHash,
                             caption: existingMatch.caption,
                             engine: existingMatch.captionEngine || existingMatch.engine || 'local',
                             model: existingMatch.captionModel || existingMatch.model || 'qwen3-vl-8b-instruct',
@@ -286,6 +270,7 @@ class VisionQueueManager {
                         const localRes = await requestLocalCaption(file, img.fileName, { imageId: img.imageId });
                         result = {
                             imageId: localRes.imageId || img.imageId,
+                            contentHash: img.contentHash,
                             caption: localRes.caption,
                             engine: localRes.engine || 'local',
                             model: localRes.model || 'qwen3-vl-8b-instruct',
@@ -336,6 +321,7 @@ class VisionQueueManager {
                         if (workerRes && workerRes.caption) {
                             result = {
                                 imageId: workerRes.imageId || img.imageId,
+                                contentHash: img.contentHash,
                                 caption: workerRes.caption,
                                 engine: workerRes.engine || 'browser',
                                 model: workerRes.model || 'florence-2-base-ft',
@@ -350,6 +336,7 @@ class VisionQueueManager {
                     await updateImageAI(result.imageId, {
                         caption: result.caption,
                         keywords: result.keywords,
+                        contentHash: img.contentHash || result.contentHash || null,
                         engine: result.engine || 'browser',
                         model: result.model || 'florence-2-base-ft',
                         captionVersion: result.captionVersion || 1
@@ -365,6 +352,8 @@ class VisionQueueManager {
                         model: result.model,
                         captionVersion: result.captionVersion
                     };
+                    this.status.current = Math.min(this.status.total, this.status.current + 1);
+                    this.status.modelStatus = `Indexed ${img.fileName} (${this.status.current}/${this.status.total})`;
                     this.notify();
                 } else {
                     console.warn(`[VisionQueue] No caption returned for ${img.fileName}`);
@@ -400,8 +389,11 @@ class VisionQueueManager {
             }
         }
 
+        const finalStats = await getQueueStats();
         this.isRunning = false;
         this.status.isIndexing = false;
+        this.status.current = finalStats.completed;
+        this.status.total = finalStats.total;
         this.status.currentFile = '';
         this.status.modelStatus = this.isPaused ? 'AI inference paused.' : 'AI indexing complete!';
         this.notify();

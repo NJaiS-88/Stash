@@ -567,6 +567,7 @@ export async function markBrowserCaptionsForUpgrade() {
 export async function updateImageAI(imageId, {
     caption,
     keywords,
+    contentHash = null,
     embedding = null,
     engine = 'browser', // 'local' | 'browser'
     model = 'florence-2-base-ft',
@@ -592,6 +593,7 @@ export async function updateImageAI(imageId, {
                     ...record,
                     caption: caption || record.caption,
                     keywords: keywords || record.keywords || [],
+                    contentHash: contentHash || record.contentHash || null,
                     embedding: embedding || record.embedding || null,
                     // Phase 14 Decoupled Two-Stage State Machine
                     captionStatus: 'completed',
@@ -808,93 +810,18 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
         return new Promise((resolve, reject) => {
             const tx = db.transaction(IMAGES_STORE, 'readwrite');
             const store = tx.objectStore(IMAGES_STORE);
-            const req = store.openCursor();
             const now = Date.now();
 
-            let bestCandidate = null;
-            let bestPriority = 999;
+            // 1. Fast indexed check: High priority items (1 = new, 2 = modified)
+            if (store.indexNames.contains('queuePriority')) {
+                const pIndex = store.index('queuePriority');
+                const pReq = pIndex.openCursor(IDBKeyRange.bound(1, 2));
 
-            req.onsuccess = (e) => {
-                const cursor = e.target.result;
-                if (!cursor) {
-                    if (bestCandidate) {
-                        // Claim the highest priority candidate found across the database
-                        const claimReq = store.get(bestCandidate.imageId);
-                        claimReq.onsuccess = () => {
-                            const rec = claimReq.result;
-                            if (rec) {
-                                rec.captionStatus = 'processing';
-                                rec.indexingStatus = 'processing';
-                                rec.processingStartedAt = now;
-                                store.put(rec);
-                                resolve(rec);
-                            } else {
-                                resolve(null);
-                            }
-                        };
-                        claimReq.onerror = () => resolve(null);
-                        return;
-                    }
-                    resolve(null);
-                    return;
-                }
-
-                const rec = cursor.value;
-                if (rec.status === 'available') {
-                    // Phase 21: Auto-recover stale in-flight job if encountered during claim scan (5-minute safety threshold)
-                    if (rec.captionStatus === 'processing' && (now - (rec.processingStartedAt || 0) > 300000)) {
-                        if (!rec.caption || !rec.caption.trim()) {
-                            rec.captionStatus = 'pending';
-                            rec.indexingStatus = 'pending';
-                            rec.processingStartedAt = null;
-                            if (!rec.queuePriority) rec.queuePriority = 3;
-                            cursor.update(rec);
-                        }
-                    }
-
-                    // Completed images (A100, A101) must never be reprocessed unnecessarily:
-                    if (rec.captionStatus === 'completed' && (!isLocalAiAvailable || (rec.captionEngine !== 'browser' && rec.captionModel !== 'florence-2-base-ft' && rec.captionModel !== 'vit-gpt2'))) {
-                        cursor.continue();
-                        return;
-                    }
-
-                    let priority = null;
-
-                    // Priority 1: New images
-                    if (rec.queuePriority === 1 && rec.captionStatus === 'pending') {
-                        priority = 1;
-                    }
-                    // Priority 2: Modified images
-                    else if (rec.queuePriority === 2 && rec.captionStatus === 'pending') {
-                        priority = 2;
-                    }
-                    // Priority 3: Never-captioned images
-                    else if (rec.captionStatus === 'pending' && (!rec.caption || rec.caption.trim() === '')) {
-                        priority = 3;
-                    }
-                    // Priority 4: Failed/retryable jobs (retryCount < 3, 30s backoff)
-                    else if (
-                        rec.captionStatus === 'failed' &&
-                        (rec.retryCount || 0) < 3 &&
-                        (!rec.processingStartedAt || (now - rec.processingStartedAt > 30000))
-                    ) {
-                        priority = 4;
-                    }
-                    // Priority 5: Old browser captions eligible for Local AI upgrade
-                    else if (
-                        isLocalAiAvailable &&
-                        rec.captionStatus === 'completed' &&
-                        (rec.captionEngine === 'browser' || rec.captionModel === 'florence-2-base-ft' || rec.captionModel === 'vit-gpt2')
-                    ) {
-                        priority = 5;
-                    }
-
-                    if (priority !== null && priority < bestPriority) {
-                        bestCandidate = rec;
-                        bestPriority = priority;
-
-                        // Priority 1 is the highest possible priority: claim immediately without scanning further!
-                        if (bestPriority === 1) {
+                pReq.onsuccess = (e) => {
+                    const cursor = e.target.result;
+                    if (cursor) {
+                        const rec = cursor.value;
+                        if (rec.status === 'available' && rec.captionStatus === 'pending') {
                             rec.captionStatus = 'processing';
                             rec.indexingStatus = 'processing';
                             rec.processingStartedAt = now;
@@ -902,12 +829,125 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
                             resolve(rec);
                             return;
                         }
+                        cursor.continue();
+                        return;
                     }
-                }
+                    queryPendingIndex();
+                };
+                pReq.onerror = () => queryPendingIndex();
+            } else {
+                queryPendingIndex();
+            }
 
-                cursor.continue();
-            };
-            req.onerror = () => reject(req.error);
+            function queryPendingIndex() {
+                // 2. High-speed lookup on captionStatus index for 'pending' (Priority 3)
+                if (store.indexNames.contains('captionStatus')) {
+                    const cIndex = store.index('captionStatus');
+                    const cReq = cIndex.openCursor(IDBKeyRange.only('pending'));
+
+                    cReq.onsuccess = (ev) => {
+                        const cursor = ev.target.result;
+                        if (cursor) {
+                            const rec = cursor.value;
+                            if (rec.status === 'available') {
+                                rec.captionStatus = 'processing';
+                                rec.indexingStatus = 'processing';
+                                rec.processingStartedAt = now;
+                                cursor.update(rec);
+                                resolve(rec);
+                                return;
+                            }
+                            cursor.continue();
+                            return;
+                        }
+                        queryFailedOrUpgrade();
+                    };
+                    cReq.onerror = () => queryFailedOrUpgrade();
+                } else {
+                    fallbackFullScan();
+                }
+            }
+
+            function queryFailedOrUpgrade() {
+                const cIndex = store.index('captionStatus');
+
+                // 3. Check for retryable failed images (Priority 4)
+                const fReq = cIndex.openCursor(IDBKeyRange.only('failed'));
+                fReq.onsuccess = (ev) => {
+                    const cursor = ev.target.result;
+                    if (cursor) {
+                        const rec = cursor.value;
+                        if (
+                            rec.status === 'available' &&
+                            (rec.retryCount || 0) < 3 &&
+                            (!rec.processingStartedAt || (now - rec.processingStartedAt > 30000))
+                        ) {
+                            rec.captionStatus = 'processing';
+                            rec.indexingStatus = 'processing';
+                            rec.processingStartedAt = now;
+                            cursor.update(rec);
+                            resolve(rec);
+                            return;
+                        }
+                        cursor.continue();
+                        return;
+                    }
+
+                    // 4. If local AI is available, check for browser captions to upgrade (Priority 5)
+                    if (isLocalAiAvailable) {
+                        const uReq = cIndex.openCursor(IDBKeyRange.only('completed'));
+                        uReq.onsuccess = (evu) => {
+                            const uCursor = evu.target.result;
+                            if (uCursor) {
+                                const rec = uCursor.value;
+                                if (
+                                    rec.status === 'available' &&
+                                    (rec.captionEngine === 'browser' ||
+                                     rec.captionModel === 'florence-2-base-ft' ||
+                                     rec.captionModel === 'vit-gpt2')
+                                ) {
+                                    rec.captionStatus = 'processing';
+                                    rec.indexingStatus = 'processing';
+                                    rec.processingStartedAt = now;
+                                    uCursor.update(rec);
+                                    resolve(rec);
+                                    return;
+                                }
+                                uCursor.continue();
+                                return;
+                            }
+                            resolve(null);
+                        };
+                        uReq.onerror = () => resolve(null);
+                        return;
+                    }
+
+                    resolve(null);
+                };
+                fReq.onerror = () => resolve(null);
+            }
+
+            function fallbackFullScan() {
+                const req = store.openCursor();
+                req.onsuccess = (e) => {
+                    const cursor = e.target.result;
+                    if (!cursor) {
+                        resolve(null);
+                        return;
+                    }
+                    const rec = cursor.value;
+                    if (rec.status === 'available' && rec.captionStatus === 'pending') {
+                        rec.captionStatus = 'processing';
+                        rec.indexingStatus = 'processing';
+                        rec.processingStartedAt = now;
+                        cursor.update(rec);
+                        resolve(rec);
+                        return;
+                    }
+                    cursor.continue();
+                };
+                req.onerror = () => reject(req.error);
+            }
         });
     } catch (error) {
         console.error('Error claiming pending image by priority:', error);

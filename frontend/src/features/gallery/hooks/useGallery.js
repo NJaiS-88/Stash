@@ -42,31 +42,34 @@ export const useGallery = () => {
 
     const [missingImages, setMissingImages] = useState([]);
 
-    // Live UI card update: when background worker completes an image, update activeFolder state immediately
+    // Live UI card update: when background worker completes an image, update activeFolder state efficiently
     useEffect(() => {
         if (indexingState?.lastIndexed && activeFolder?.id === indexingState.lastIndexed.folderId) {
             const { imageId, caption, keywords } = indexingState.lastIndexed;
             setActiveFolder(prev => {
-                if (!prev || prev.id !== indexingState.lastIndexed.folderId) return prev;
+                if (!prev || prev.id !== indexingState.lastIndexed.folderId || !prev.imageRecords) return prev;
+                const idx = prev.imageRecords.findIndex(r => r.imageId === imageId);
+                if (idx === -1) return prev;
+                const currentRec = prev.imageRecords[idx];
+                if (currentRec.caption === caption && currentRec.captionStatus === 'completed') return prev;
+
+                const updated = [...prev.imageRecords];
+                updated[idx] = {
+                    ...currentRec,
+                    caption,
+                    keywords,
+                    captionStatus: 'completed',
+                    cloudIndexStatus: currentRec.cloudIndexStatus || 'pending',
+                    captionEngine: indexingState.lastIndexed.engine || currentRec.captionEngine,
+                    captionModel: indexingState.lastIndexed.model || currentRec.captionModel,
+                    captionVersion: 1,
+                    captionedAt: Date.now(),
+                    processingStartedAt: null,
+                    indexingStatus: 'indexed'
+                };
                 return {
                     ...prev,
-                    imageRecords: prev.imageRecords.map(r =>
-                        r.imageId === imageId
-                            ? {
-                                ...r,
-                                caption,
-                                keywords,
-                                captionStatus: 'completed',
-                                cloudIndexStatus: r.cloudIndexStatus || 'pending',
-                                captionEngine: indexingState.lastIndexed.engine || r.captionEngine,
-                                captionModel: indexingState.lastIndexed.model || r.captionModel,
-                                captionVersion: 1,
-                                captionedAt: Date.now(),
-                                processingStartedAt: null,
-                                indexingStatus: 'indexed'
-                            }
-                            : r
-                    )
+                    imageRecords: updated
                 };
             });
         }

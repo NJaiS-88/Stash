@@ -258,6 +258,40 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
 
         const fingerprint = hash ? await computeFingerprint(hash) : null;
 
+        // Instant Hash Deduplication: Check if any existing image in database already has this exact hash and is captioned
+        const existingCaptioned = existingRecords.find(r =>
+            r.contentHash && r.contentHash === hash && r.caption && r.caption.trim().length > 0
+        );
+
+        if (existingCaptioned) {
+            results.push({
+                imageId: crypto.randomUUID(),
+                folderId,
+                relativePath: disc.path,
+                fileName: disc.name,
+                size: disc.size,
+                lastModified: disc.lastModified,
+                contentHash: hash,
+                fingerprint,
+                status: "available",
+                missingSince: null,
+                caption: existingCaptioned.caption,
+                keywords: existingCaptioned.keywords || [],
+                captionEngine: existingCaptioned.captionEngine || existingCaptioned.engine || 'local',
+                captionModel: existingCaptioned.captionModel || existingCaptioned.model || 'qwen3-vl-8b-instruct',
+                captionVersion: existingCaptioned.captionVersion || 1,
+                captionStatus: "completed",
+                cloudIndexStatus: "pending",
+                queuePriority: null,
+                retryCount: 0,
+                processingStartedAt: null,
+                captionedAt: Date.now(),
+                indexedAt: null,
+                indexingStatus: "indexed"
+            });
+            continue;
+        }
+
         results.push({
             imageId: crypto.randomUUID(),
             folderId,

@@ -193,7 +193,7 @@ const Dashboard = () => {
 
                                 <button
                                     onClick={handleRescanAll}
-                                    disabled={loading || scanning || indexingState.isIndexing}
+                                    disabled={loading || scanning}
                                     className="btn-logout"
                                     style={{ padding: '10px 18px', fontSize: '0.9rem' }}
                                     title="Run Global Multi-Folder Scan"
@@ -205,7 +205,7 @@ const Dashboard = () => {
 
                         <button
                             onClick={handleConnectNew}
-                            disabled={loading || scanning || indexingState.isIndexing || isMobile}
+                            disabled={loading || scanning || isMobile}
                             className="btn-nav-primary"
                             style={{
                                 padding: '10px 18px',
