@@ -22,8 +22,11 @@ export const GalleryProvider = ({ children }) => {
     useEffect(() => {
         const autoBootBackgroundAI = async () => {
             try {
-                // 1. Recover any interrupted jobs from previous sessions
-                await resetStaleProcessingImages();
+                // 1. Phase 21 Crash/Close Recovery: Reset any interrupted jobs from previous sessions
+                const recovered = await resetStaleProcessingImages({ forceAll: true });
+                if (recovered > 0) {
+                    console.log(`[Stash AI Daemon] Stale-job recovery: reset ${recovered} interrupted image(s) -> pending.`);
+                }
 
                 // 2. Fetch all connected folders
                 const savedFolders = await getAllFolders();

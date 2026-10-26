@@ -433,9 +433,11 @@ export async function getPendingImages({ isLocalAiAvailable = false } = {}) {
             if (img.status !== 'available') return false;
             // 1. Pending (Priority 1: new, Priority 2: modified, Priority 3: never-captioned)
             if (img.captionStatus === 'pending') return true;
-            // 2. Retryable failed jobs (Priority 4)
+            // 2. Interrupted/stale processing jobs from dead sessions (5-minute safety threshold)
+            if (img.captionStatus === 'processing' && (!img.processingStartedAt || (Date.now() - img.processingStartedAt > 300000))) return true;
+            // 3. Retryable failed jobs (Priority 4)
             if (img.captionStatus === 'failed' && (img.retryCount || 0) < 3) return true;
-            // 3. Browser captions eligible for local AI upgrade (Priority 5)
+            // 4. Browser captions eligible for local AI upgrade (Priority 5)
             if (isLocalAiAvailable && img.captionStatus === 'completed' && (img.captionEngine === 'browser' || img.captionModel === 'florence-2-base-ft' || img.captionModel === 'vit-gpt2')) return true;
             return false;
         });
@@ -698,13 +700,35 @@ export async function getImagesPaged(folderId = null, offset = 0, limit = 60) {
 }
 
 /**
- * Resets any image stuck in 'processing' state back to 'pending'
- * (e.g. if the user closed the browser mid-inference). Prevents orphaned jobs.
+ * Phase 21: Crash / Refresh / Close Recovery — Stale Job Recovery
  *
- * @param {number} maxAgeMs - Maximum allowed processing age before resetting (default: 2 mins)
- * @returns {Promise<number>} Count of reset records
+ * Scans IndexedDB for any image left in 'processing' state.
+ * When the browser closes mid-inference, any in-flight task has an interrupted
+ * or stale processingStartedAt timestamp.
+ *
+ * Rules:
+ * 1. If forceAll === true (fresh app launch / next boot when no queue is alive):
+ *    All uncompleted 'processing' records are immediately reset back to 'pending'.
+ * 2. If forceAll === false (during runtime):
+ *    Any 'processing' record where (now - processingStartedAt > maxAgeMs) is considered stale and reset.
+ * 3. Completed images (captionStatus === 'completed', e.g. A100, A101) must NEVER be reset or reprocessed.
+ *
+ * @param {Object|number} [optionsOrMaxAge=300000] - Options object or max age in ms
+ * @param {number} [optionsOrMaxAge.maxAgeMs=300000] - Stale threshold for running session (default: 5 mins)
+ * @param {boolean} [optionsOrMaxAge.forceAll=false] - Reset all processing records on startup
+ * @returns {Promise<number>} Count of recovered records
  */
-export async function resetStaleProcessingImages(maxAgeMs = 120000) {
+export async function resetStaleProcessingImages(optionsOrMaxAge = 300000) {
+    let maxAgeMs = 300000;
+    let forceAll = false;
+
+    if (typeof optionsOrMaxAge === 'object' && optionsOrMaxAge !== null) {
+        maxAgeMs = optionsOrMaxAge.maxAgeMs ?? 300000;
+        forceAll = Boolean(optionsOrMaxAge.forceAll);
+    } else if (typeof optionsOrMaxAge === 'number') {
+        maxAgeMs = optionsOrMaxAge;
+    }
+
     try {
         const db = await getDB();
         return new Promise((resolve, reject) => {
@@ -717,24 +741,39 @@ export async function resetStaleProcessingImages(maxAgeMs = 120000) {
             req.onsuccess = (e) => {
                 const cursor = e.target.result;
                 if (!cursor) {
+                    if (count > 0) {
+                        console.log(`[StaleRecovery] Recovered ${count} interrupted image(s) from 'processing' -> 'pending'.`);
+                    }
                     resolve(count);
                     return;
                 }
+
                 const record = cursor.value;
+
+                // Completed images (A100, A101) must NEVER be reprocessed or reset:
+                if (record.captionStatus === 'completed' || Boolean(record.caption && record.caption.trim())) {
+                    cursor.continue();
+                    return;
+                }
+
                 const isProcessing = record.captionStatus === 'processing' || record.indexingStatus === 'processing';
                 if (isProcessing) {
                     const started = record.processingStartedAt || 0;
-                    if (now - started > maxAgeMs) {
-                        if (record.captionStatus !== 'completed') {
-                            record.captionStatus = 'pending';
-                            record.indexingStatus = 'pending';
-                        }
+                    const isStale = forceAll || (now - started > maxAgeMs);
+
+                    if (isStale) {
+                        record.captionStatus = 'pending';
+                        record.indexingStatus = 'pending';
                         record.processingStartedAt = null;
-                        record.retryCount = (record.retryCount || 0) + 1;
+                        // Restore queue priority if missing
+                        if (!record.queuePriority) {
+                            record.queuePriority = 3;
+                        }
                         cursor.update(record);
                         count++;
                     }
                 }
+
                 cursor.continue();
             };
             req.onerror = () => reject(req.error);
@@ -802,6 +841,23 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
 
                 const rec = cursor.value;
                 if (rec.status === 'available') {
+                    // Phase 21: Auto-recover stale in-flight job if encountered during claim scan (5-minute safety threshold)
+                    if (rec.captionStatus === 'processing' && (now - (rec.processingStartedAt || 0) > 300000)) {
+                        if (!rec.caption || !rec.caption.trim()) {
+                            rec.captionStatus = 'pending';
+                            rec.indexingStatus = 'pending';
+                            rec.processingStartedAt = null;
+                            if (!rec.queuePriority) rec.queuePriority = 3;
+                            cursor.update(rec);
+                        }
+                    }
+
+                    // Completed images (A100, A101) must never be reprocessed unnecessarily:
+                    if (rec.captionStatus === 'completed' && (!isLocalAiAvailable || (rec.captionEngine !== 'browser' && rec.captionModel !== 'florence-2-base-ft' && rec.captionModel !== 'vit-gpt2'))) {
+                        cursor.continue();
+                        return;
+                    }
+
                     let priority = null;
 
                     // Priority 1: New images

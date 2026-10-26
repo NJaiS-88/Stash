@@ -116,7 +116,8 @@ class VisionQueueManager {
         this.isPaused = false;
         this.isRunning = true;
 
-        await resetStaleProcessingImages();
+        // Phase 21: Recover any interrupted jobs from previous sessions
+        await resetStaleProcessingImages({ forceAll: true });
 
         // Tier 1 Detection: Probe 127.0.0.1 Stash Local AI Helper
         const localHealth = await checkLocalAiHealth();
@@ -317,7 +318,7 @@ class VisionQueueManager {
                                     this.activeResolve(null);
                                     this.activeResolve = null;
                                 }
-                            }, 60000); // 60s safety timeout
+                            }, 180000); // 3-minute safety timeout (never interrupts slow CPU or model download)
 
                             this.activeResolve = (data) => {
                                 clearTimeout(timer);

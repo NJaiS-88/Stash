@@ -1,6 +1,22 @@
 import { computeFileHash, computeFingerprint } from './crypto';
 
 /**
+ * Phase 21: Resolves safe caption status.
+ * Completed captions are permanently preserved and never reset.
+ * In-flight interrupted jobs ('processing' with no caption) revert to 'pending'.
+ */
+function resolveSafeCaptionStatus(existing) {
+    if (!existing) return "pending";
+    if (existing.captionStatus === "completed" || Boolean(existing.caption && existing.caption.trim())) {
+        return "completed";
+    }
+    if (existing.captionStatus === "processing") {
+        return "pending";
+    }
+    return existing.captionStatus || "pending";
+}
+
+/**
  * Creates a catalog registry record for an image file according to Phase 2/Phase 5/Phase 7 schema.
  * Computes or preserves contentHash and user-specific HMAC fingerprint without storing binary data.
  *
@@ -35,8 +51,8 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
             fingerprint,
             status: "available",
             missingSince: null,
-            // Phase 14: Decoupled Image Processing State
-            captionStatus: isUnchanged ? (existingRecord?.captionStatus || (existingRecord?.caption ? "completed" : "pending")) : "pending",
+            // Phase 14 & 21: Decoupled Image Processing State with Crash Recovery
+            captionStatus: isUnchanged ? resolveSafeCaptionStatus(existingRecord) : "pending",
             cloudIndexStatus: isUnchanged ? (existingRecord?.cloudIndexStatus || (existingRecord?.embedding ? "completed" : "pending")) : "pending",
             caption: isUnchanged ? (existingRecord?.caption || null) : null,
             captionEngine: isUnchanged ? (existingRecord?.captionEngine || null) : null,
@@ -140,8 +156,8 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 fingerprint,
                 status: "available",
                 missingSince: null,
-                // Phase 14: Decoupled Image Processing State
-                captionStatus: isIdentical ? (existing.captionStatus || (existing.caption ? "completed" : "pending")) : "pending",
+                // Phase 14 & 21: Decoupled Image Processing State with Crash Recovery
+                captionStatus: isIdentical ? resolveSafeCaptionStatus(existing) : "pending",
                 cloudIndexStatus: isIdentical ? (existing.cloudIndexStatus || (existing.embedding ? "completed" : "pending")) : "pending",
                 caption: isIdentical ? (existing.caption || null) : null,
                 captionEngine: isIdentical ? (existing.captionEngine || null) : null,
@@ -207,8 +223,8 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 fingerprint,
                 status: "available",
                 missingSince: null,
-                // Phase 14: Decoupled Image Processing State
-                captionStatus: existing.captionStatus || (existing.caption ? "completed" : "pending"),
+                // Phase 14 & 21: Decoupled Image Processing State with Crash Recovery
+                captionStatus: resolveSafeCaptionStatus(existing),
                 cloudIndexStatus: existing.cloudIndexStatus || (existing.embedding ? "completed" : "pending"),
                 caption: existing.caption || null,
                 captionEngine: existing.captionEngine || null,
@@ -350,7 +366,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                     ...existing,
                     status: "available",
                     missingSince: null,
-                    captionStatus: existing.captionStatus || (existing.caption ? "completed" : "pending"),
+                    captionStatus: resolveSafeCaptionStatus(existing),
                     cloudIndexStatus: existing.cloudIndexStatus || (existing.embedding ? "completed" : "pending"),
                     caption: existing.caption || null,
                     captionEngine: existing.captionEngine || null,
@@ -449,7 +465,7 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 fingerprint,
                 status: "available",
                 missingSince: null,
-                captionStatus: match.captionStatus || (match.caption ? "completed" : "pending"),
+                captionStatus: resolveSafeCaptionStatus(match),
                 cloudIndexStatus: match.cloudIndexStatus || (match.embedding ? "completed" : "pending"),
                 caption: match.caption || null,
                 captionEngine: match.captionEngine || null,
