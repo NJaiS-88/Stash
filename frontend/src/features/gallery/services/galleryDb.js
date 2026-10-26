@@ -1,5 +1,5 @@
 const DB_NAME = 'stash_db';
-const DB_VERSION = 8;
+const DB_VERSION = 9;
 const FOLDERS_STORE = 'folders';
 const IMAGES_STORE = 'images';
 
@@ -44,6 +44,10 @@ function getDB() {
             }
             if (!imageStore.indexNames.contains('cloudIndexStatus')) {
                 imageStore.createIndex('cloudIndexStatus', 'cloudIndexStatus', { unique: false });
+            }
+            // Phase 15: Index on queuePriority for persistent prioritized AI scheduling
+            if (!imageStore.indexNames.contains('queuePriority')) {
+                imageStore.createIndex('queuePriority', 'queuePriority', { unique: false });
             }
         };
         request.onsuccess = () => resolve(request.result);
@@ -139,7 +143,7 @@ export async function saveImageRecords(records) {
             const tx = db.transaction(IMAGES_STORE, 'readwrite');
             const store = tx.objectStore(IMAGES_STORE);
             for (const record of records) {
-                // Phase 14: Normalize decoupled two-stage image processing state
+                // Phase 14 & 15: Normalize decoupled two-stage image processing state with priority
                 const normalized = {
                     ...record,
                     captionStatus: record.captionStatus || (record.caption ? 'completed' : 'pending'),
@@ -148,6 +152,9 @@ export async function saveImageRecords(records) {
                     captionEngine: record.captionEngine || (record.caption ? (record.engine || 'browser') : null),
                     captionModel: record.captionModel || (record.caption ? (record.model || 'florence-2-base-ft') : null),
                     captionVersion: record.captionVersion || (record.caption ? 1 : null),
+                    queuePriority: record.queuePriority !== undefined
+                        ? record.queuePriority
+                        : (record.captionStatus === 'completed' || record.caption ? null : 3),
                     retryCount: record.retryCount || 0,
                     processingStartedAt: record.processingStartedAt || null,
                     captionedAt: record.captionedAt || (record.caption ? Date.now() : null),
@@ -419,18 +426,19 @@ export async function purgeMissingImages() {
  *
  * @returns {Promise<Array>}
  */
-export async function getPendingImages() {
+export async function getPendingImages({ isLocalAiAvailable = false } = {}) {
     try {
         const available = await getAvailableImages();
-        return available.filter(img =>
-            img.status === 'available' &&
-            img.captionStatus !== 'completed' &&
-            (
-                img.captionStatus === 'pending' ||
-                (!img.captionStatus && img.indexingStatus === 'pending') ||
-                (!img.caption && img.captionStatus !== 'completed')
-            )
-        );
+        return available.filter(img => {
+            if (img.status !== 'available') return false;
+            // 1. Pending (Priority 1: new, Priority 2: modified, Priority 3: never-captioned)
+            if (img.captionStatus === 'pending') return true;
+            // 2. Retryable failed jobs (Priority 4)
+            if (img.captionStatus === 'failed' && (img.retryCount || 0) < 3) return true;
+            // 3. Browser captions eligible for local AI upgrade (Priority 5)
+            if (isLocalAiAvailable && img.captionStatus === 'completed' && (img.captionEngine === 'browser' || img.captionModel === 'florence-2-base-ft' || img.captionModel === 'vit-gpt2')) return true;
+            return false;
+        });
     } catch (error) {
         console.error('Error getting pending images:', error);
         return [];
@@ -589,6 +597,7 @@ export async function updateImageAI(imageId, {
                     captionEngine: engine,
                     captionModel: model,
                     captionVersion: version,
+                    queuePriority: null, // Cleared from queue upon completion
                     captionedAt: Date.now(),
                     processingStartedAt: null,
                     retryCount: 0,
@@ -740,45 +749,138 @@ export async function resetStaleProcessingImages(maxAgeMs = 120000) {
  *
  * @returns {Promise<Object|null>}
  */
-export async function claimNextPendingImage() {
+/**
+ * Phase 15: Atomically claims the next image from IndexedDB strictly following
+ * the 5-Tier Queue Priority with Concurrency = 1:
+ *
+ * Priority 1: New images (queuePriority === 1)
+ * Priority 2: Modified images (queuePriority === 2)
+ * Priority 3: Never-captioned images (captionStatus === 'pending', no caption)
+ * Priority 4: Failed/retryable jobs (captionStatus === 'failed', retryCount < 3, 30s backoff)
+ * Priority 5: Old browser captions eligible for Local AI upgrade (only if isLocalAiAvailable)
+ *
+ * @param {Object} options - { isLocalAiAvailable: boolean }
+ * @returns {Promise<Object|null>}
+ */
+export async function claimNextPendingImage({ isLocalAiAvailable = false } = {}) {
     try {
         const db = await getDB();
         return new Promise((resolve, reject) => {
             const tx = db.transaction(IMAGES_STORE, 'readwrite');
             const store = tx.objectStore(IMAGES_STORE);
             const req = store.openCursor();
+            const now = Date.now();
+
+            let bestCandidate = null;
+            let bestPriority = 999;
 
             req.onsuccess = (e) => {
                 const cursor = e.target.result;
                 if (!cursor) {
+                    if (bestCandidate) {
+                        // Claim the highest priority candidate found across the database
+                        const claimReq = store.get(bestCandidate.imageId);
+                        claimReq.onsuccess = () => {
+                            const rec = claimReq.result;
+                            if (rec) {
+                                rec.captionStatus = 'processing';
+                                rec.indexingStatus = 'processing';
+                                rec.processingStartedAt = now;
+                                store.put(rec);
+                                resolve(rec);
+                            } else {
+                                resolve(null);
+                            }
+                        };
+                        claimReq.onerror = () => resolve(null);
+                        return;
+                    }
                     resolve(null);
                     return;
                 }
-                const record = cursor.value;
-                const isPending =
-                    record.status === 'available' &&
-                    record.captionStatus !== 'completed' &&
-                    record.captionStatus !== 'failed' &&
-                    (
-                        record.captionStatus === 'pending' ||
-                        (!record.captionStatus && record.indexingStatus === 'pending') ||
-                        (!record.caption && record.captionStatus !== 'completed')
-                    );
 
-                if (isPending) {
-                    record.captionStatus = 'processing';
-                    record.indexingStatus = 'processing';
-                    record.processingStartedAt = Date.now();
-                    cursor.update(record);
-                    resolve(record);
-                    return;
+                const rec = cursor.value;
+                if (rec.status === 'available') {
+                    let priority = null;
+
+                    // Priority 1: New images
+                    if (rec.queuePriority === 1 && rec.captionStatus === 'pending') {
+                        priority = 1;
+                    }
+                    // Priority 2: Modified images
+                    else if (rec.queuePriority === 2 && rec.captionStatus === 'pending') {
+                        priority = 2;
+                    }
+                    // Priority 3: Never-captioned images
+                    else if (rec.captionStatus === 'pending' && (!rec.caption || rec.caption.trim() === '')) {
+                        priority = 3;
+                    }
+                    // Priority 4: Failed/retryable jobs (retryCount < 3, 30s backoff)
+                    else if (
+                        rec.captionStatus === 'failed' &&
+                        (rec.retryCount || 0) < 3 &&
+                        (!rec.processingStartedAt || (now - rec.processingStartedAt > 30000))
+                    ) {
+                        priority = 4;
+                    }
+                    // Priority 5: Old browser captions eligible for Local AI upgrade
+                    else if (
+                        isLocalAiAvailable &&
+                        rec.captionStatus === 'completed' &&
+                        (rec.captionEngine === 'browser' || rec.captionModel === 'florence-2-base-ft' || rec.captionModel === 'vit-gpt2')
+                    ) {
+                        priority = 5;
+                    }
+
+                    if (priority !== null && priority < bestPriority) {
+                        bestCandidate = rec;
+                        bestPriority = priority;
+
+                        // Priority 1 is the highest possible priority: claim immediately without scanning further!
+                        if (bestPriority === 1) {
+                            rec.captionStatus = 'processing';
+                            rec.indexingStatus = 'processing';
+                            rec.processingStartedAt = now;
+                            cursor.update(rec);
+                            resolve(rec);
+                            return;
+                        }
+                    }
                 }
+
                 cursor.continue();
             };
             req.onerror = () => reject(req.error);
         });
     } catch (error) {
-        console.error('Error claiming pending image:', error);
+        console.error('Error claiming pending image by priority:', error);
+        return null;
+    }
+}
+
+/**
+ * Returns a high-level statistical summary of the persistent IndexedDB queue.
+ *
+ * @returns {Promise<Object>}
+ */
+export async function getQueueStats() {
+    try {
+        const all = await getAllImages();
+        const available = all.filter(img => img.status === 'available');
+        return {
+            total: available.length,
+            completed: available.filter(i => i.captionStatus === 'completed').length,
+            pending: available.filter(i => i.captionStatus === 'pending').length,
+            processing: available.filter(i => i.captionStatus === 'processing').length,
+            failed: available.filter(i => i.captionStatus === 'failed').length,
+            newImages: available.filter(i => i.queuePriority === 1 && i.captionStatus === 'pending').length,
+            modifiedImages: available.filter(i => i.queuePriority === 2 && i.captionStatus === 'pending').length,
+            neverCaptioned: available.filter(i => i.captionStatus === 'pending' && !i.caption).length,
+            retryableFailed: available.filter(i => i.captionStatus === 'failed' && (i.retryCount || 0) < 3).length,
+            browserUpgradeEligible: available.filter(i => i.captionStatus === 'completed' && (i.captionEngine === 'browser' || i.captionModel === 'florence-2-base-ft')).length
+        };
+    } catch (err) {
+        console.error('Error calculating queue stats:', err);
         return null;
     }
 }

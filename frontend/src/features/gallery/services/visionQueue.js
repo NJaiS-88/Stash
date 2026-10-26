@@ -137,7 +137,8 @@ class VisionQueueManager {
             this.initWorker();
         }
 
-        const pendingList = await getPendingImages();
+        const isLocalAvailable = this.status.activeEngine === 'local';
+        const pendingList = await getPendingImages({ isLocalAiAvailable: isLocalAvailable });
         this.status.isIndexing = true;
         this.status.isPaused = false;
         this.status.total = pendingList.length;
@@ -175,8 +176,8 @@ class VisionQueueManager {
                 }
             }
 
-            // Claim next available pending image atomically
-            const img = await claimNextPendingImage();
+            // Claim next available pending image atomically following 5-tier queue priority
+            const img = await claimNextPendingImage({ isLocalAiAvailable: this.status.activeEngine === 'local' });
             if (!img) {
                 // If we ran in browser mode, check if local AI became ready to upgrade earlier images
                 if (this.status.activeEngine === 'browser') {
@@ -229,8 +230,9 @@ class VisionQueueManager {
                 await saveImageRecord({
                     ...img,
                     captionStatus: 'failed',
+                    queuePriority: 4,
                     retryCount: (img.retryCount || 0) + 1,
-                    processingStartedAt: null,
+                    processingStartedAt: Date.now(),
                     indexingStatus: 'failed',
                     captionError: 'Folder disconnected or handle unavailable'
                 });
@@ -251,8 +253,9 @@ class VisionQueueManager {
                         ...img,
                         status: 'missing',
                         captionStatus: 'failed',
+                        queuePriority: 4,
                         retryCount: (img.retryCount || 0) + 1,
-                        processingStartedAt: null,
+                        processingStartedAt: Date.now(),
                         indexingStatus: 'failed'
                     });
                     continue;
@@ -353,8 +356,9 @@ class VisionQueueManager {
                     await saveImageRecord({
                         ...img,
                         captionStatus: 'failed',
+                        queuePriority: 4,
                         retryCount: (img.retryCount || 0) + 1,
-                        processingStartedAt: null,
+                        processingStartedAt: Date.now(),
                         captionError: 'Empty caption returned',
                         indexingStatus: 'failed'
                     });
@@ -364,8 +368,9 @@ class VisionQueueManager {
                 await saveImageRecord({
                     ...img,
                     captionStatus: 'failed',
+                    queuePriority: 4,
                     retryCount: (img.retryCount || 0) + 1,
-                    processingStartedAt: null,
+                    processingStartedAt: Date.now(),
                     captionError: err?.message || 'Caption inference failed',
                     indexingStatus: 'failed'
                 });
