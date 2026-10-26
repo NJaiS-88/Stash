@@ -8,14 +8,20 @@ export const LOCAL_AI_DEFAULT_PORT = 48124;
 export const LOCAL_AI_BASE_URL = `http://127.0.0.1:${LOCAL_AI_DEFAULT_PORT}`;
 export const LOCAL_AI_SETUP_DOWNLOAD_URL = '/downloads/StashLocalAI-Setup.exe';
 
-export const SEARCH_RETRIEVAL_PROMPT = `Generate one concise, highly detailed factual caption for this image optimized for search retrieval.
+export const SEARCH_RETRIEVAL_PROMPT = `Describe this image in one factual, highly detailed sentence optimized for visual search retrieval.
 
-Describe all visible information accurately:
-- Image type & subjects: people, animals, landscapes, cityscapes, food, vehicles, objects, art, screenshots, documents, or UI.
-- Visible text/titles: transcribe key legible text, titles, brand names, or error messages (for screenshots, receipts, signs, or slides).
-- Context & attributes: activities, scene/setting, colors, lighting, materials, and layout.
-
-Do not speculate on hidden identities, unverified relationships, or unseen facts. Return only the caption.`;
+Follow these rules:
+1. Describe visible subjects, their specific actions or poses, the physical environment, lighting, colors, and layout.
+2. If distinct text, signage, or titles are clearly visible, transcribe them.
+3. Target style: "Three people standing on a sandy beach beside the ocean at sunset, with waves and an orange sky in the background."
+4. Avoid vague output like: "People enjoying their vacation."
+5. Avoid unsupported inference about:
+- identity;
+- relationships;
+- exact location;
+- event;
+- emotions.
+6. For now, caption is the primary semantic representation. Provide only the factual caption without conversational filler or bullet points.`;
 
 const STOP_WORDS = new Set([
     'a', 'an', 'the', 'in', 'on', 'at', 'is', 'are', 'was', 'were', 'it', 'its',
@@ -92,14 +98,17 @@ export async function getLocalAiStatus() {
  *
  * @param {Blob|File} fileBlob - Image file binary
  * @param {string} fileName - Original file name
- * @param {Object} options - Custom generation options
- * @returns {Promise<{ caption: string, keywords: Array<string>, model: string, engine: string }>}
+ * @param {Object} options - Custom generation options (including imageId)
+ * @returns {Promise<{ imageId: string, caption: string, engine: string, model: string, captionVersion: number, keywords: Array<string> }>}
  */
 export async function requestLocalCaption(fileBlob, fileName = 'image.jpg', options = {}) {
     const formData = new FormData();
     formData.append('image', fileBlob, fileName);
     formData.append('prompt', options.prompt || SEARCH_RETRIEVAL_PROMPT);
     formData.append('maxTokens', options.maxTokens || 85);
+    if (options.imageId) {
+        formData.append('imageId', options.imageId);
+    }
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s timeout for CPU inference
@@ -124,10 +133,12 @@ export async function requestLocalCaption(fileBlob, fileName = 'image.jpg', opti
             : extractKeywords(caption);
 
         return {
+            imageId: data.imageId || options.imageId || fileName,
             caption,
-            keywords,
-            model: data.model || 'qwen3-vl-8b-instruct',
             engine: 'local',
+            model: data.model || 'qwen3-vl-8b-instruct',
+            captionVersion: data.captionVersion || 1,
+            keywords,
             durationMs: data.durationMs || 0
         };
     } catch (err) {

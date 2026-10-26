@@ -568,7 +568,8 @@ export async function updateImageAI(imageId, {
     embedding = null,
     engine = 'browser', // 'local' | 'browser'
     model = 'florence-2-base-ft',
-    version = 1
+    version = 1,
+    captionVersion = 1
 }) {
     if (!imageId) return false;
     try {
@@ -596,7 +597,7 @@ export async function updateImageAI(imageId, {
                     // Caption Provenance
                     captionEngine: engine,
                     captionModel: model,
-                    captionVersion: version,
+                    captionVersion: captionVersion ?? version ?? 1,
                     queuePriority: null, // Cleared from queue upon completion
                     captionedAt: Date.now(),
                     processingStartedAt: null,

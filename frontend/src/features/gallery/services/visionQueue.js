@@ -270,10 +270,12 @@ class VisionQueueManager {
                     if (existingMatch && existingMatch.caption && existingMatch.imageId !== img.imageId) {
                         console.log(`[VisionQueue] ⚡ Instant Hash Reuse for ${img.fileName}: Reusing existing caption from ${existingMatch.fileName}`);
                         result = {
+                            imageId: img.imageId,
                             caption: existingMatch.caption,
-                            keywords: existingMatch.keywords || [],
                             engine: existingMatch.captionEngine || existingMatch.engine || 'local',
-                            model: existingMatch.captionModel || existingMatch.model || 'qwen3-vl-8b-instruct'
+                            model: existingMatch.captionModel || existingMatch.model || 'qwen3-vl-8b-instruct',
+                            captionVersion: existingMatch.captionVersion || 1,
+                            keywords: existingMatch.keywords || []
                         };
                     }
                 }
@@ -281,12 +283,14 @@ class VisionQueueManager {
                 // ---------------- TIER 1: STASH LOCAL AI ----------------
                 if (!result && this.status.activeEngine === 'local') {
                     try {
-                        const localRes = await requestLocalCaption(file, img.fileName);
+                        const localRes = await requestLocalCaption(file, img.fileName, { imageId: img.imageId });
                         result = {
+                            imageId: localRes.imageId || img.imageId,
                             caption: localRes.caption,
-                            keywords: localRes.keywords,
-                            engine: 'local',
-                            model: localRes.model || 'qwen3-vl-8b-instruct'
+                            engine: localRes.engine || 'local',
+                            model: localRes.model || 'qwen3-vl-8b-instruct',
+                            captionVersion: localRes.captionVersion || 1,
+                            keywords: localRes.keywords
                         };
                         console.log(`[VisionQueue] ✅ Generated via Local Qwen3-VL (${img.fileName}): "${result.caption.slice(0, 70)}..."`);
                     } catch (localErr) {
@@ -312,43 +316,48 @@ class VisionQueueManager {
                         });
                         if (workerRes) {
                             result = {
+                                imageId: workerRes.imageId || img.imageId,
                                 caption: workerRes.caption,
-                                keywords: workerRes.keywords,
-                                engine: 'browser',
-                                model: 'florence-2-base-ft'
+                                engine: workerRes.engine || 'browser',
+                                model: workerRes.model || 'florence-2-base-ft',
+                                captionVersion: workerRes.captionVersion || 1,
+                                keywords: workerRes.keywords
                             };
                         }
                     }
 
                     // Emergency main-thread fallback if worker yielded nothing
                     if (!result || !result.caption) {
-                        const directRes = await describeImage(file);
+                        const directRes = await describeImage(file, img.imageId);
                         result = {
+                            imageId: directRes.imageId || img.imageId,
                             caption: directRes.caption,
-                            keywords: directRes.keywords,
-                            engine: 'browser',
-                            model: 'florence-2-base-ft'
+                            engine: directRes.engine || 'browser',
+                            model: directRes.model || 'florence-2-base-ft',
+                            captionVersion: directRes.captionVersion || 1,
+                            keywords: directRes.keywords
                         };
                     }
                 }
 
                 if (result && result.caption) {
-                    await updateImageAI(img.imageId, {
+                    await updateImageAI(result.imageId, {
                         caption: result.caption,
                         keywords: result.keywords,
                         engine: result.engine || 'browser',
                         model: result.model || 'florence-2-base-ft',
-                        version: 1
+                        captionVersion: result.captionVersion || 1
                     });
 
                     // Live event notification for UI cards to immediately render new tags & caption
                     this.status.lastIndexed = {
-                        imageId: img.imageId,
+                        imageId: result.imageId,
                         folderId: img.folderId,
                         caption: result.caption,
                         keywords: result.keywords,
                         engine: result.engine,
-                        model: result.model
+                        model: result.model,
+                        captionVersion: result.captionVersion
                     };
                     this.notify();
                 } else {

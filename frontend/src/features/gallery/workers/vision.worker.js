@@ -151,6 +151,9 @@ self.onmessage = async (e) => {
                 type: 'IMAGE_INDEXED',
                 imageId,
                 caption: caption || `Photo: ${fileName}`,
+                engine: 'browser',
+                model: activeDevice === 'wasm' && !pipelineInstance?.modelId?.includes('Florence') ? 'vit-gpt2' : 'florence-2-base-ft',
+                captionVersion: 1,
                 keywords: keywords.length > 0 ? keywords : extractKeywords(fileName),
                 device: activeDevice
             });
@@ -165,6 +168,9 @@ self.onmessage = async (e) => {
                 type: 'IMAGE_INDEXED',
                 imageId,
                 caption: fallbackCaption,
+                engine: 'browser',
+                model: 'fallback-heuristics',
+                captionVersion: 1,
                 keywords: fallbackKeywords,
                 fallback: true
             });

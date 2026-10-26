@@ -59,15 +59,16 @@ SUPPORTED_MODELS = {
 
 ACTIVE_MODEL_KEY = "qwen3-vl-8b-instruct"
 
-# Full high-fidelity retrieval prompt that unlocks Qwen's deep scene analysis and OCR
-DEFAULT_RETRIEVAL_PROMPT = """Generate one concise, highly detailed factual caption for this image optimized for search retrieval.
+# Phase 19 Retrieval-Focused Caption Instruction
+DEFAULT_RETRIEVAL_PROMPT = """Describe this image in one factual, highly detailed sentence optimized for visual search retrieval.
 
-Describe all visible information accurately:
-- Image type & subjects: people, animals, landscapes, cityscapes, food, vehicles, objects, art, screenshots, documents, or UI.
-- Visible text/titles: transcribe key legible text, titles, brand names, or error messages (for screenshots, receipts, signs, or slides).
-- Context & attributes: activities, scene/setting, colors, lighting, materials, and layout.
-
-Do not speculate on hidden identities, unverified relationships, or unseen facts. Return only the caption."""
+Follow these rules:
+1. Describe visible subjects, their specific actions or poses, the physical environment, lighting, colors, and layout.
+2. If distinct text, signage, or titles are clearly visible, transcribe them.
+3. Target style: "Three people standing on a sandy beach beside the ocean at sunset, with waves and an orange sky in the background."
+4. Avoid vague summaries (e.g. do NOT say "people enjoying their vacation" or "a nice day").
+5. Do NOT make unsupported inferences about identity, personal relationships, exact location names, specific events, or emotions.
+6. Provide only the factual caption without conversational filler or bullet points."""
 
 # Image Preprocessing Settings
 # 672px is the sweet spot for Qwen-VL: cuts vision encode time from 38s to ~18s (half the tokens)

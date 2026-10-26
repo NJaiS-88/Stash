@@ -118,12 +118,14 @@ export function extractKeywords(caption) {
  * Runs in-browser visual inference on a local image File or Blob using Florence-2.
  *
  * @param {File|Blob} file - Local image file object
+ * @param {string|null} imageId - Optional image record identifier
  * @param {Function|null} onModelProgress - Optional model download progress callback
- * @returns {Promise<{ caption: string, keywords: Array<string> }>}
+ * @returns {Promise<{ imageId: string, caption: string, engine: string, model: string, captionVersion: number, keywords: Array<string> }>}
  */
-export async function describeImage(file, onModelProgress = null) {
+export async function describeImage(file, imageId = null, onModelProgress = null) {
     if (!file) throw new Error('No file provided for vision inference');
 
+    const finalImageId = imageId || file.name || 'browser-img';
     let objectUrl = null;
     try {
         const pipe = await getVisionPipeline(onModelProgress);
@@ -139,14 +141,22 @@ export async function describeImage(file, onModelProgress = null) {
         const keywords = extractKeywords(caption);
 
         return {
+            imageId: finalImageId,
             caption,
+            engine: 'browser',
+            model: activeDevice === 'wasm' && !captionPipeline?.modelId?.includes('Florence') ? 'vit-gpt2' : 'florence-2-base-ft',
+            captionVersion: 1,
             keywords: keywords.length > 0 ? keywords : extractKeywords(file.name || '')
         };
     } catch (err) {
         console.warn('Vision model inference error:', err);
         const fallbackKeywords = extractKeywords(file.name || '');
         return {
+            imageId: finalImageId,
             caption: file.name ? `Photo of ${file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ')}` : 'Local image',
+            engine: 'browser',
+            model: 'fallback-heuristics',
+            captionVersion: 1,
             keywords: fallbackKeywords
         };
     } finally {
