@@ -218,17 +218,30 @@ function ThumbnailCard({ record, fileItem, rootHandle }) {
                     color: 'var(--text-muted)'
                 }}>
                     <span>{formatSize(displaySize)}</span>
-                    <span style={{
-                        fontSize: '0.68rem',
-                        fontWeight: 600,
-                        padding: '2px 6px',
-                        borderRadius: '4px',
-                        backgroundColor: record?.indexingStatus === 'indexed' ? '#ecfdf5' : '#fffbeb',
-                        color: record?.indexingStatus === 'indexed' ? '#059669' : '#b45309',
-                        border: `1px solid ${record?.indexingStatus === 'indexed' ? '#a7f3d0' : '#fde68a'}`
-                    }}>
-                        {record?.indexingStatus === 'indexed' ? '✨ Indexed' : (record ? '⏳ Pending AI' : 'Ready')}
-                    </span>
+                    {(() => {
+                        const isIndexed = record?.captionStatus === 'completed' || record?.indexingStatus === 'indexed';
+                        const isProcessing = record?.captionStatus === 'processing' || record?.indexingStatus === 'processing';
+                        const isFailed = record?.captionStatus === 'failed';
+
+                        const bg = isIndexed ? '#ecfdf5' : (isFailed ? '#fef2f2' : (isProcessing ? '#eff6ff' : '#fffbeb'));
+                        const text = isIndexed ? '#059669' : (isFailed ? '#dc2626' : (isProcessing ? '#2563eb' : '#b45309'));
+                        const border = isIndexed ? '#a7f3d0' : (isFailed ? '#fecaca' : (isProcessing ? '#bfdbfe' : '#fde68a'));
+                        const label = isIndexed ? '✨ Indexed' : (isFailed ? '⚠️ Failed' : (isProcessing ? '⚙️ Analyzing' : (record ? '⏳ Pending AI' : 'Ready')));
+
+                        return (
+                            <span style={{
+                                fontSize: '0.68rem',
+                                fontWeight: 600,
+                                padding: '2px 6px',
+                                borderRadius: '4px',
+                                backgroundColor: bg,
+                                color: text,
+                                border: `1px solid ${border}`
+                            }}>
+                                {label}
+                            </span>
+                        );
+                    })()}
                 </div>
             </div>
         </div>

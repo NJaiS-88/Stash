@@ -53,7 +53,19 @@ export const useGallery = () => {
                     ...prev,
                     imageRecords: prev.imageRecords.map(r =>
                         r.imageId === imageId
-                            ? { ...r, caption, keywords, indexingStatus: 'indexed' }
+                            ? {
+                                ...r,
+                                caption,
+                                keywords,
+                                captionStatus: 'completed',
+                                cloudIndexStatus: r.cloudIndexStatus || 'pending',
+                                captionEngine: indexingState.lastIndexed.engine || r.captionEngine,
+                                captionModel: indexingState.lastIndexed.model || r.captionModel,
+                                captionVersion: 1,
+                                captionedAt: Date.now(),
+                                processingStartedAt: null,
+                                indexingStatus: 'indexed'
+                            }
                             : r
                     )
                 };

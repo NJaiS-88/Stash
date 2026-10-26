@@ -34,7 +34,19 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
             contentHash,
             fingerprint,
             status: "available",
-            indexingStatus: isUnchanged ? (existingRecord.indexingStatus || "pending") : "pending"
+            missingSince: null,
+            // Phase 14: Decoupled Image Processing State
+            captionStatus: isUnchanged ? (existingRecord?.captionStatus || (existingRecord?.caption ? "completed" : "pending")) : "pending",
+            cloudIndexStatus: isUnchanged ? (existingRecord?.cloudIndexStatus || (existingRecord?.embedding ? "completed" : "pending")) : "pending",
+            caption: isUnchanged ? (existingRecord?.caption || null) : null,
+            captionEngine: isUnchanged ? (existingRecord?.captionEngine || null) : null,
+            captionModel: isUnchanged ? (existingRecord?.captionModel || null) : null,
+            captionVersion: isUnchanged ? (existingRecord?.captionVersion || null) : null,
+            retryCount: isUnchanged ? (existingRecord?.retryCount || 0) : 0,
+            processingStartedAt: null,
+            captionedAt: isUnchanged ? (existingRecord?.captionedAt || null) : null,
+            indexedAt: isUnchanged ? (existingRecord?.indexedAt || null) : null,
+            indexingStatus: isUnchanged ? (existingRecord?.indexingStatus || "pending") : "pending"
         };
     } catch (err) {
         console.warn('Could not read metadata for:', fileItem.name, err);
@@ -127,6 +139,17 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 fingerprint,
                 status: "available",
                 missingSince: null,
+                // Phase 14: Decoupled Image Processing State
+                captionStatus: isIdentical ? (existing.captionStatus || (existing.caption ? "completed" : "pending")) : "pending",
+                cloudIndexStatus: isIdentical ? (existing.cloudIndexStatus || (existing.embedding ? "completed" : "pending")) : "pending",
+                caption: isIdentical ? (existing.caption || null) : null,
+                captionEngine: isIdentical ? (existing.captionEngine || null) : null,
+                captionModel: isIdentical ? (existing.captionModel || null) : null,
+                captionVersion: isIdentical ? (existing.captionVersion || null) : null,
+                retryCount: isIdentical ? (existing.retryCount || 0) : 0,
+                processingStartedAt: null,
+                captionedAt: isIdentical ? (existing.captionedAt || null) : null,
+                indexedAt: isIdentical ? (existing.indexedAt || null) : null,
                 indexingStatus: isIdentical ? (existing.indexingStatus || "pending") : "pending"
             });
         }
@@ -182,6 +205,17 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
                 fingerprint,
                 status: "available",
                 missingSince: null,
+                // Phase 14: Decoupled Image Processing State
+                captionStatus: existing.captionStatus || (existing.caption ? "completed" : "pending"),
+                cloudIndexStatus: existing.cloudIndexStatus || (existing.embedding ? "completed" : "pending"),
+                caption: existing.caption || null,
+                captionEngine: existing.captionEngine || null,
+                captionModel: existing.captionModel || null,
+                captionVersion: existing.captionVersion || null,
+                retryCount: existing.retryCount || 0,
+                processingStartedAt: null,
+                captionedAt: existing.captionedAt || null,
+                indexedAt: existing.indexedAt || null,
                 indexingStatus: existing.indexingStatus || "pending"
             });
         } else {
@@ -215,6 +249,18 @@ export async function buildImageRegistryForFolder(flatFiles, folderId, existingR
             contentHash: hash,
             fingerprint,
             status: "available",
+            missingSince: null,
+            // Phase 14: Decoupled Image Processing State
+            captionStatus: "pending",
+            cloudIndexStatus: "pending",
+            caption: null,
+            captionEngine: null,
+            captionModel: null,
+            captionVersion: null,
+            retryCount: 0,
+            processingStartedAt: null,
+            captionedAt: null,
+            indexedAt: null,
             indexingStatus: "pending"
         });
     }
@@ -300,6 +346,16 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                     ...existing,
                     status: "available",
                     missingSince: null,
+                    captionStatus: existing.captionStatus || (existing.caption ? "completed" : "pending"),
+                    cloudIndexStatus: existing.cloudIndexStatus || (existing.embedding ? "completed" : "pending"),
+                    caption: existing.caption || null,
+                    captionEngine: existing.captionEngine || null,
+                    captionModel: existing.captionModel || null,
+                    captionVersion: existing.captionVersion || null,
+                    retryCount: existing.retryCount || 0,
+                    processingStartedAt: null,
+                    captionedAt: existing.captionedAt || null,
+                    indexedAt: existing.indexedAt || null,
                     indexingStatus: existing.indexingStatus || "pending"
                 });
             } else {
@@ -318,6 +374,17 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                     fingerprint,
                     status: "available",
                     missingSince: null,
+                    // Phase 14: Content changed, reset caption and cloud index stages
+                    captionStatus: "pending",
+                    cloudIndexStatus: "pending",
+                    caption: null,
+                    captionEngine: null,
+                    captionModel: null,
+                    captionVersion: null,
+                    retryCount: 0,
+                    processingStartedAt: null,
+                    captionedAt: null,
+                    indexedAt: null,
                     indexingStatus: "pending" // Needs AI re-indexing
                 });
             }
@@ -376,6 +443,16 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 fingerprint,
                 status: "available",
                 missingSince: null,
+                captionStatus: match.captionStatus || (match.caption ? "completed" : "pending"),
+                cloudIndexStatus: match.cloudIndexStatus || (match.embedding ? "completed" : "pending"),
+                caption: match.caption || null,
+                captionEngine: match.captionEngine || null,
+                captionModel: match.captionModel || null,
+                captionVersion: match.captionVersion || null,
+                retryCount: match.retryCount || 0,
+                processingStartedAt: null,
+                captionedAt: match.captionedAt || null,
+                indexedAt: match.indexedAt || null,
                 indexingStatus: match.indexingStatus || "pending"
             };
 
@@ -431,8 +508,13 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 captionEngine: existingCaptioned.captionEngine || existingCaptioned.engine || 'local',
                 captionModel: existingCaptioned.captionModel || existingCaptioned.model || 'qwen3-vl-8b-instruct',
                 captionVersion: existingCaptioned.captionVersion || 1,
-                captionStatus: "complete",
-                indexingStatus: "complete"
+                captionStatus: "completed",
+                cloudIndexStatus: "pending",
+                retryCount: 0,
+                processingStartedAt: null,
+                captionedAt: Date.now(),
+                indexedAt: null,
+                indexingStatus: "indexed"
             });
         } else {
             created.push({
@@ -446,6 +528,16 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
                 fingerprint,
                 status: "available",
                 missingSince: null,
+                captionStatus: "pending",
+                cloudIndexStatus: "pending",
+                caption: null,
+                captionEngine: null,
+                captionModel: null,
+                captionVersion: null,
+                retryCount: 0,
+                processingStartedAt: null,
+                captionedAt: null,
+                indexedAt: null,
                 indexingStatus: "pending"
             });
         }

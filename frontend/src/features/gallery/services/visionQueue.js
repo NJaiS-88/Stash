@@ -229,6 +229,8 @@ class VisionQueueManager {
                 await saveImageRecord({
                     ...img,
                     captionStatus: 'failed',
+                    retryCount: (img.retryCount || 0) + 1,
+                    processingStartedAt: null,
                     indexingStatus: 'failed',
                     captionError: 'Folder disconnected or handle unavailable'
                 });
@@ -249,6 +251,8 @@ class VisionQueueManager {
                         ...img,
                         status: 'missing',
                         captionStatus: 'failed',
+                        retryCount: (img.retryCount || 0) + 1,
+                        processingStartedAt: null,
                         indexingStatus: 'failed'
                     });
                     continue;
@@ -344,9 +348,27 @@ class VisionQueueManager {
                         model: result.model
                     };
                     this.notify();
+                } else {
+                    console.warn(`[VisionQueue] No caption returned for ${img.fileName}`);
+                    await saveImageRecord({
+                        ...img,
+                        captionStatus: 'failed',
+                        retryCount: (img.retryCount || 0) + 1,
+                        processingStartedAt: null,
+                        captionError: 'Empty caption returned',
+                        indexingStatus: 'failed'
+                    });
                 }
             } catch (err) {
                 console.warn(`[VisionQueue] Failed to index ${img.fileName}:`, err);
+                await saveImageRecord({
+                    ...img,
+                    captionStatus: 'failed',
+                    retryCount: (img.retryCount || 0) + 1,
+                    processingStartedAt: null,
+                    captionError: err?.message || 'Caption inference failed',
+                    indexingStatus: 'failed'
+                });
             }
         }
 
