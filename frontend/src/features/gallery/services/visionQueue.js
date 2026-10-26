@@ -168,9 +168,10 @@ class VisionQueueManager {
             // Claim next available pending image atomically following 5-tier queue priority (O(1) indexed lookup)
             const img = await claimNextPendingImage({ isLocalAiAvailable: this.status.activeEngine === 'local' });
             if (!img) {
-                // No more pending images
+                console.log('[VisionQueue] All pending images have been processed.');
                 break;
             }
+            console.log(`[VisionQueue] Claimed photo ${processedCount + 1}: ${img.fileName} (ID: ${img.imageId})`);
 
             let folder = folderMap.get(img.folderId);
             if (!folder?.handle) {
@@ -355,6 +356,7 @@ class VisionQueueManager {
                     this.status.current = Math.min(this.status.total, this.status.current + 1);
                     this.status.modelStatus = `Indexed ${img.fileName} (${this.status.current}/${this.status.total})`;
                     this.notify();
+                    console.log(`[VisionQueue] ✅ Completed ${img.fileName}. Advancing to next photo...`);
                 } else {
                     console.warn(`[VisionQueue] No caption returned for ${img.fileName}`);
                     await saveImageRecord({

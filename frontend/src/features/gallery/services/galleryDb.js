@@ -807,150 +807,70 @@ export async function resetStaleProcessingImages(optionsOrMaxAge = 300000) {
 export async function claimNextPendingImage({ isLocalAiAvailable = false } = {}) {
     try {
         const db = await getDB();
-        return new Promise((resolve, reject) => {
+        return new Promise((resolve) => {
             const tx = db.transaction(IMAGES_STORE, 'readwrite');
             const store = tx.objectStore(IMAGES_STORE);
             const now = Date.now();
+            let resolved = false;
 
-            // 1. Fast indexed check: High priority items (1 = new, 2 = modified)
-            if (store.indexNames.contains('queuePriority')) {
-                const pIndex = store.index('queuePriority');
-                const pReq = pIndex.openCursor(IDBKeyRange.bound(1, 2));
-
-                pReq.onsuccess = (e) => {
-                    const cursor = e.target.result;
-                    if (cursor) {
-                        const rec = cursor.value;
-                        if (rec.status === 'available' && rec.captionStatus === 'pending') {
-                            rec.captionStatus = 'processing';
-                            rec.indexingStatus = 'processing';
-                            rec.processingStartedAt = now;
-                            cursor.update(rec);
-                            resolve(rec);
-                            return;
-                        }
-                        cursor.continue();
-                        return;
-                    }
-                    queryPendingIndex();
-                };
-                pReq.onerror = () => queryPendingIndex();
-            } else {
-                queryPendingIndex();
-            }
-
-            function queryPendingIndex() {
-                // 2. High-speed lookup on captionStatus index for 'pending' (Priority 3)
-                if (store.indexNames.contains('captionStatus')) {
-                    const cIndex = store.index('captionStatus');
-                    const cReq = cIndex.openCursor(IDBKeyRange.only('pending'));
-
-                    cReq.onsuccess = (ev) => {
-                        const cursor = ev.target.result;
-                        if (cursor) {
-                            const rec = cursor.value;
-                            if (rec.status === 'available') {
-                                rec.captionStatus = 'processing';
-                                rec.indexingStatus = 'processing';
-                                rec.processingStartedAt = now;
-                                cursor.update(rec);
-                                resolve(rec);
-                                return;
-                            }
-                            cursor.continue();
-                            return;
-                        }
-                        queryFailedOrUpgrade();
-                    };
-                    cReq.onerror = () => queryFailedOrUpgrade();
-                } else {
-                    fallbackFullScan();
+            const finish = (result) => {
+                if (!resolved) {
+                    resolved = true;
+                    resolve(result);
                 }
-            }
+            };
 
-            function queryFailedOrUpgrade() {
-                const cIndex = store.index('captionStatus');
+            tx.onerror = () => finish(null);
+            tx.onabort = () => finish(null);
 
-                // 3. Check for retryable failed images (Priority 4)
-                const fReq = cIndex.openCursor(IDBKeyRange.only('failed'));
-                fReq.onsuccess = (ev) => {
-                    const cursor = ev.target.result;
-                    if (cursor) {
-                        const rec = cursor.value;
-                        if (
-                            rec.status === 'available' &&
-                            (rec.retryCount || 0) < 3 &&
-                            (!rec.processingStartedAt || (now - rec.processingStartedAt > 30000))
-                        ) {
-                            rec.captionStatus = 'processing';
-                            rec.indexingStatus = 'processing';
-                            rec.processingStartedAt = now;
-                            cursor.update(rec);
-                            resolve(rec);
-                            return;
-                        }
-                        cursor.continue();
-                        return;
+            const req = store.openCursor();
+            req.onsuccess = (e) => {
+                const cursor = e.target.result;
+                if (!cursor) {
+                    finish(null);
+                    return;
+                }
+
+                const rec = cursor.value;
+                if (rec && rec.status === 'available') {
+                    const hasCaption = Boolean(rec.caption && typeof rec.caption === 'string' && rec.caption.trim().length > 0);
+
+                    // Auto-recover stale in-flight job if stuck > 5 minutes
+                    if (rec.captionStatus === 'processing' && (now - (rec.processingStartedAt || 0) > 300000)) {
+                        rec.captionStatus = hasCaption ? 'completed' : 'pending';
+                        rec.processingStartedAt = null;
                     }
 
-                    // 4. If local AI is available, check for browser captions to upgrade (Priority 5)
-                    if (isLocalAiAvailable) {
-                        const uReq = cIndex.openCursor(IDBKeyRange.only('completed'));
-                        uReq.onsuccess = (evu) => {
-                            const uCursor = evu.target.result;
-                            if (uCursor) {
-                                const rec = uCursor.value;
-                                if (
-                                    rec.status === 'available' &&
-                                    (rec.captionEngine === 'browser' ||
-                                     rec.captionModel === 'florence-2-base-ft' ||
-                                     rec.captionModel === 'vit-gpt2')
-                                ) {
-                                    rec.captionStatus = 'processing';
-                                    rec.indexingStatus = 'processing';
-                                    rec.processingStartedAt = now;
-                                    uCursor.update(rec);
-                                    resolve(rec);
-                                    return;
-                                }
-                                uCursor.continue();
-                                return;
-                            }
-                            resolve(null);
-                        };
-                        uReq.onerror = () => resolve(null);
-                        return;
-                    }
+                    // Check if eligible for local AI upgrade from browser fallback
+                    const isEligibleUpgrade = isLocalAiAvailable && hasCaption && (
+                        rec.captionEngine === 'browser' ||
+                        rec.captionModel === 'florence-2-base-ft' ||
+                        rec.captionModel === 'vit-gpt2'
+                    );
 
-                    resolve(null);
-                };
-                fReq.onerror = () => resolve(null);
-            }
+                    // Check if pending: explicit 'pending' OR missing/empty caption without failure
+                    const isPending = (rec.captionStatus === 'pending' || (!hasCaption && rec.captionStatus !== 'failed' && rec.captionStatus !== 'processing'));
 
-            function fallbackFullScan() {
-                const req = store.openCursor();
-                req.onsuccess = (e) => {
-                    const cursor = e.target.result;
-                    if (!cursor) {
-                        resolve(null);
-                        return;
-                    }
-                    const rec = cursor.value;
-                    if (rec.status === 'available' && rec.captionStatus === 'pending') {
+                    // Check if retryable failure (< 3 retries, 30s backoff)
+                    const isRetryableFailed = rec.captionStatus === 'failed' && (rec.retryCount || 0) < 3 && (now - (rec.processingStartedAt || 0) > 30000);
+
+                    if (isPending || isRetryableFailed || isEligibleUpgrade) {
                         rec.captionStatus = 'processing';
                         rec.indexingStatus = 'processing';
                         rec.processingStartedAt = now;
                         cursor.update(rec);
-                        resolve(rec);
+                        finish(rec);
                         return;
                     }
-                    cursor.continue();
-                };
-                req.onerror = () => reject(req.error);
-            }
+                }
+
+                cursor.continue();
+            };
+
+            req.onerror = () => finish(null);
         });
     } catch (error) {
-        console.error('Error claiming pending image by priority:', error);
+        console.error('Error claiming pending image:', error);
         return null;
     }
 }
