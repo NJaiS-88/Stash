@@ -1,31 +1,141 @@
 import { useState, useEffect, useRef } from 'react';
 import { getFileFromHandle, resolveFileByPath } from '../services/fileSystem';
 
+function countTreeFiles(dir) {
+    if (!dir || !dir.children) return 0;
+    let count = 0;
+    for (const child of dir.children) {
+        if (child.kind === 'file') count++;
+        else if (child.kind === 'directory') count += countTreeFiles(child);
+    }
+    return count;
+}
+
+function buildTreeFromRecords(records) {
+    if (!records || records.length === 0) return [];
+
+    const root = {
+        name: 'root',
+        kind: 'directory',
+        children: []
+    };
+
+    for (const record of records) {
+        if (!record || record.status === 'missing') continue;
+        const fullPath = record.relativePath || record.fileName || '';
+        if (!fullPath) continue;
+
+        const parts = fullPath.split('/').filter(Boolean);
+        let current = root;
+
+        for (let i = 0; i < parts.length; i++) {
+            const part = parts[i];
+            const isLast = i === parts.length - 1;
+
+            if (isLast) {
+                current.children.push({
+                    name: part,
+                    kind: 'file',
+                    isImage: true,
+                    path: fullPath,
+                    record: record
+                });
+            } else {
+                let dir = current.children.find(c => c.kind === 'directory' && c.name === part);
+                if (!dir) {
+                    dir = {
+                        name: part,
+                        kind: 'directory',
+                        path: parts.slice(0, i + 1).join('/'),
+                        children: []
+                    };
+                    current.children.push(dir);
+                }
+                current = dir;
+            }
+        }
+    }
+
+    function sortTree(node) {
+        if (!node.children) return;
+        node.children.sort((a, b) => {
+            if (a.kind === b.kind) {
+                return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+            }
+            return a.kind === 'directory' ? -1 : 1;
+        });
+        for (const child of node.children) {
+            if (child.kind === 'directory') {
+                sortTree(child);
+            }
+        }
+    }
+
+    sortTree(root);
+    return root.children;
+}
+
 function TreeItem({ item, depth = 0 }) {
     const isDir = item.kind === 'directory';
+    const [isOpen, setIsOpen] = useState(true);
+    const fileCount = isDir ? countTreeFiles(item) : 0;
 
     return (
-        <div style={{ marginLeft: `${depth * 20}px`, marginTop: '4px' }}>
-            <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '8px',
-                padding: '6px 10px',
-                borderRadius: 'var(--radius-sm)',
-                backgroundColor: isDir ? 'rgba(15, 23, 42, 0.02)' : 'transparent',
-                fontFamily: 'monospace',
-                fontSize: '0.875rem',
-                color: isDir ? 'var(--text-primary)' : 'var(--text-secondary)',
-                fontWeight: isDir ? 600 : 400
-            }}>
-                <span>{isDir ? '📁' : (item.isImage ? '🖼️' : '📄')}</span>
-                <span>{item.name}{isDir ? '/' : ''}</span>
+        <div style={{ marginLeft: depth > 0 ? '18px' : '0px', marginTop: '2px' }}>
+            <div
+                onClick={() => isDir && setIsOpen(!isOpen)}
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '6px 10px',
+                    borderRadius: 'var(--radius-sm)',
+                    backgroundColor: isDir ? 'rgba(15, 23, 42, 0.03)' : 'transparent',
+                    fontSize: '0.85rem',
+                    color: isDir ? 'var(--text-primary)' : 'var(--text-secondary)',
+                    fontWeight: isDir ? 600 : 400,
+                    cursor: isDir ? 'pointer' : 'default',
+                    userSelect: 'none',
+                    transition: 'background-color 0.15s ease'
+                }}
+            >
+                {isDir ? (
+                    <span style={{ fontSize: '0.7rem', width: '12px', color: 'var(--text-muted)' }}>
+                        {isOpen ? '▼' : '▶'}
+                    </span>
+                ) : (
+                    <span style={{ width: '12px' }} />
+                )}
+                <span>{isDir ? (isOpen ? '📂' : '📁') : (item.isImage ? '🖼️' : '📄')}</span>
+                <span style={{ flex: 1, fontFamily: isDir ? 'inherit' : 'monospace' }}>
+                    {item.name}{isDir ? '/' : ''}
+                </span>
+
+                {isDir && (
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 400 }}>
+                        {fileCount} {fileCount === 1 ? 'photo' : 'photos'}
+                    </span>
+                )}
+
+                {!isDir && item.record && (
+                    <span style={{
+                        fontSize: '0.68rem',
+                        fontWeight: 600,
+                        padding: '1px 5px',
+                        borderRadius: '3px',
+                        backgroundColor: item.record.captionStatus === 'completed' ? '#ecfdf5' : '#fffbeb',
+                        color: item.record.captionStatus === 'completed' ? '#059669' : '#b45309',
+                        border: `1px solid ${item.record.captionStatus === 'completed' ? '#a7f3d0' : '#fde68a'}`
+                    }}>
+                        {item.record.captionStatus === 'completed' ? '✨ Indexed' : '⏳ Pending'}
+                    </span>
+                )}
             </div>
 
-            {isDir && item.children && (
-                <div>
+            {isDir && isOpen && item.children && item.children.length > 0 && (
+                <div style={{ borderLeft: '1px solid #e2e8f0', marginLeft: '16px', paddingLeft: '4px' }}>
                     {item.children.map((child, idx) => (
-                        <TreeItem key={child.path || idx} item={child} depth={depth + 1} />
+                        <TreeItem key={child.path || `${child.name}-${idx}`} item={child} depth={depth + 1} />
                     ))}
                 </div>
             )}
@@ -355,18 +465,36 @@ export default function GalleryGrid({
                     padding: '24px',
                     boxShadow: 'var(--shadow-subtle)'
                 }}>
-                    <h3 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '16px', color: 'var(--text-primary)' }}>
-                        Folder Contents
-                    </h3>
-                    {entries.length === 0 ? (
-                        <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Folder is empty</p>
-                    ) : (
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                            {entries.map((item, idx) => (
-                                <TreeItem key={item.path || idx} item={item} depth={0} />
-                            ))}
-                        </div>
-                    )}
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                        <h3 style={{ fontSize: '0.95rem', fontWeight: 600, margin: 0, color: 'var(--text-primary)' }}>
+                            Folder Structure
+                        </h3>
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                            Click folders to expand or collapse
+                        </span>
+                    </div>
+
+                    {(() => {
+                        const treeData = (entries && entries.length > 0)
+                            ? entries
+                            : buildTreeFromRecords(searchQuery.trim() ? filteredItems.map(f => f.record || f) : (imageRecords.length > 0 ? imageRecords : flatFiles));
+
+                        if (treeData.length === 0) {
+                            return (
+                                <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>
+                                    {searchQuery ? 'No matching files or folders found' : 'Folder is empty'}
+                                </p>
+                            );
+                        }
+
+                        return (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                                {treeData.map((item, idx) => (
+                                    <TreeItem key={item.path || `${item.name}-${idx}`} item={item} depth={0} />
+                                ))}
+                            </div>
+                        );
+                    })()}
                 </div>
             ) : (
                 /* Virtualized image thumbnail grid view */
