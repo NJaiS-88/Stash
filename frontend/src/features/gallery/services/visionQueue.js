@@ -126,7 +126,12 @@ class VisionQueueManager {
         if (localHealth.available) {
             this.status.activeEngine = 'local';
             this.status.activeModel = localHealth.model || 'Qwen3-VL-8B-Instruct';
-            console.log('[VisionQueue] Preferred Tier 1 Active: Stash Local AI (Qwen3-VL-8B)');
+            console.log('[VisionQueue] 🚀 Preferred Tier 1 Active: Stash Local AI (Qwen3-VL-8B). Browser AI is DISABLED.');
+            // Terminate any existing browser worker so it never triggers or consumes CPU/memory
+            if (this.worker) {
+                this.worker.terminate();
+                this.worker = null;
+            }
             // Automatically upgrade any photos previously captioned by browser fallback
             const upgraded = await markBrowserCaptionsForUpgrade();
             if (upgraded > 0) {
@@ -135,7 +140,7 @@ class VisionQueueManager {
         } else {
             this.status.activeEngine = 'browser';
             this.status.activeModel = 'Florence-2-base-ft';
-            console.log('[VisionQueue] Stash Local AI not ready yet (offline or downloading). Using Browser AI (Florence-2 Web Worker)');
+            console.log('[VisionQueue] Stash Local AI not detected. Using Browser AI fallback.');
             this.initWorker();
         }
 
@@ -148,7 +153,7 @@ class VisionQueueManager {
         this.status.total = stats.total > 0 ? stats.total : pendingList.length;
         this.status.current = stats.completed;
         this.status.modelStatus = pendingList.length > 0
-            ? `Starting AI queue using ${this.status.activeEngine === 'local' ? 'Local Qwen3-VL' : 'Browser AI'}...`
+            ? `Starting AI queue using ${this.status.activeEngine === 'local' ? 'Local Qwen3-VL-8B' : 'Browser AI'}...`
             : 'All photos indexed.';
         this.notify();
 
@@ -265,52 +270,38 @@ class VisionQueueManager {
                     }
                 }
 
-                // ---------------- TIER 1: STASH LOCAL AI ----------------
+                // ---------------- TIER 1: STASH LOCAL AI (NO TIME LIMITS, NO BROWSER FALLBACK) ----------------
                 if (!result && this.status.activeEngine === 'local') {
                     try {
                         const localRes = await requestLocalCaption(file, img.fileName, { imageId: img.imageId });
-                        result = {
-                            imageId: localRes.imageId || img.imageId,
-                            contentHash: img.contentHash,
-                            caption: localRes.caption,
-                            engine: localRes.engine || 'local',
-                            model: localRes.model || 'qwen3-vl-8b-instruct',
-                            captionVersion: localRes.captionVersion || 1,
-                            keywords: localRes.keywords
-                        };
-                        console.log(`[VisionQueue] ✅ Generated via Local Qwen3-VL (${img.fileName}): "${result.caption.slice(0, 70)}..."`);
+                        if (localRes && localRes.caption && localRes.caption.trim().length > 0) {
+                            result = {
+                                imageId: localRes.imageId || img.imageId,
+                                contentHash: img.contentHash,
+                                caption: localRes.caption.trim(),
+                                engine: 'local',
+                                model: localRes.model || 'qwen3-vl-8b-instruct',
+                                captionVersion: localRes.captionVersion || 1,
+                                keywords: localRes.keywords || []
+                            };
+                            console.log(`[VisionQueue] ✅ Local Qwen3-VL captioned (${img.fileName}): "${result.caption.slice(0, 70)}..."`);
+                        }
                     } catch (localErr) {
-                        console.warn('[VisionQueue] Local AI Helper request failed, falling back to Browser AI:', localErr);
-                        // Seamless mid-queue fallback to browser Web Worker
-                        this.status.activeEngine = 'browser';
-                        this.status.activeModel = 'Florence-2-base-ft';
-                        this.initWorker();
+                        console.warn(`[VisionQueue] Local AI Helper failed for ${img.fileName}:`, localErr);
+                        // ABSOLUTELY DO NOT FALL BACK TO BROWSER AI! Keep running Local AI for other images!
                     }
                 }
 
-                // ---------------- TIER 2: BROWSER AI WEB WORKER FALLBACK ----------------
-                // Runs strictly off the React main thread inside a dedicated Web Worker.
-                // React Main Thread: Gallery, Scrolling, Navigation (zero inference freeze).
-                if (!result || !result.caption) {
+                // ---------------- TIER 2: BROWSER AI ONLY IF LOCAL AI IS NOT RUNNING ----------------
+                // Strict isolation: Browser AI will NEVER be triggered if local AI is detected
+                if (!result && this.status.activeEngine === 'browser') {
                     if (!this.worker) {
                         this.initWorker();
                     }
 
                     if (this.worker) {
                         const workerRes = await new Promise((resolve) => {
-                            const timer = setTimeout(() => {
-                                console.warn('[VisionQueue] Web Worker timed out for', img.fileName);
-                                if (this.activeResolve) {
-                                    this.activeResolve(null);
-                                    this.activeResolve = null;
-                                }
-                            }, 180000); // 3-minute safety timeout (never interrupts slow CPU or model download)
-
-                            this.activeResolve = (data) => {
-                                clearTimeout(timer);
-                                resolve(data);
-                            };
-
+                            this.activeResolve = (data) => resolve(data);
                             this.worker.postMessage({
                                 type: 'PROCESS_IMAGE',
                                 imageId: img.imageId,
@@ -324,7 +315,7 @@ class VisionQueueManager {
                                 imageId: workerRes.imageId || img.imageId,
                                 contentHash: img.contentHash,
                                 caption: workerRes.caption,
-                                engine: workerRes.engine || 'browser',
+                                engine: 'browser',
                                 model: workerRes.model || 'florence-2-base-ft',
                                 captionVersion: workerRes.captionVersion || 1,
                                 keywords: workerRes.keywords || []
@@ -336,10 +327,10 @@ class VisionQueueManager {
                 if (result && result.caption) {
                     await updateImageAI(result.imageId, {
                         caption: result.caption,
-                        keywords: result.keywords,
+                        keywords: result.keywords || [],
                         contentHash: img.contentHash || result.contentHash || null,
-                        engine: result.engine || 'browser',
-                        model: result.model || 'florence-2-base-ft',
+                        engine: result.engine || this.status.activeEngine,
+                        model: result.model || this.status.activeModel,
                         captionVersion: result.captionVersion || 1
                     });
 
@@ -348,15 +339,15 @@ class VisionQueueManager {
                         imageId: result.imageId,
                         folderId: img.folderId,
                         caption: result.caption,
-                        keywords: result.keywords,
-                        engine: result.engine,
-                        model: result.model,
+                        keywords: result.keywords || [],
+                        engine: result.engine || this.status.activeEngine,
+                        model: result.model || this.status.activeModel,
                         captionVersion: result.captionVersion
                     };
                     this.status.current = Math.min(this.status.total, this.status.current + 1);
                     this.status.modelStatus = `Indexed ${img.fileName} (${this.status.current}/${this.status.total})`;
                     this.notify();
-                    console.log(`[VisionQueue] ✅ Completed ${img.fileName}. Advancing to next photo...`);
+                    console.log(`[VisionQueue] ✅ Completed ${img.fileName}. Advancing immediately to next photo...`);
                 } else {
                     console.warn(`[VisionQueue] No caption returned for ${img.fileName}`);
                     await saveImageRecord({
@@ -381,13 +372,7 @@ class VisionQueueManager {
                     indexingStatus: 'failed'
                 });
             } finally {
-                // Phase 23: 8k-20k Memory Optimization — Immediately release decoded file buffers
                 result = null;
-
-                // Micro-yield to browser event loop every 20 items so V8 GC can sweep RAM
-                if (processedCount % 20 === 0) {
-                    await new Promise(r => setTimeout(r, 0));
-                }
             }
         }
 

@@ -44,27 +44,29 @@ export function extractKeywords(caption) {
  */
 export async function checkLocalAiHealth() {
     try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 2500);
-
         const res = await fetch(`${LOCAL_AI_BASE_URL}/health`, {
             method: 'GET',
-            headers: { 'Accept': 'application/json' },
-            signal: controller.signal
+            headers: { 'Accept': 'application/json' }
         });
-
-        clearTimeout(timeoutId);
 
         if (res.ok) {
             const data = await res.json();
+            const isAvailable = Boolean(
+                data.available === true ||
+                data.status === 'ok' ||
+                data.status === 'ready' ||
+                data.modelReady === true ||
+                data.connected === true ||
+                res.ok
+            );
             return {
                 connected: true,
-                available: Boolean(data.modelReady && data.status === 'ready'),
-                modelReady: Boolean(data.modelReady),
-                status: data.status,
+                available: isAvailable,
+                modelReady: isAvailable,
+                status: data.status || 'ready',
                 model: data.model || 'qwen3-vl-8b-instruct',
-                device: data.device || 'cpu',
-                version: data.version || '1.0.0'
+                device: data.device || 'gpu',
+                version: data.version || data.appVersion || '1.0.0'
             };
         }
         return { connected: false, available: false, modelReady: false };
@@ -95,6 +97,7 @@ export async function getLocalAiStatus() {
 /**
  * Sends an image to the local helper for Qwen3-VL-8B-Instruct inference.
  * The photo never leaves 127.0.0.1.
+ * ZERO TIMEOUTS: Inference runs uninterrupted on GPU/CPU to completion.
  *
  * @param {Blob|File} fileBlob - Image file binary
  * @param {string} fileName - Original file name
@@ -110,39 +113,30 @@ export async function requestLocalCaption(fileBlob, fileName = 'image.jpg', opti
         formData.append('imageId', options.imageId);
     }
 
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 120000); // 120s timeout for CPU inference
+    // Zero time limits: Never abort local AI inference
+    const res = await fetch(`${LOCAL_AI_BASE_URL}/caption`, {
+        method: 'POST',
+        body: formData
+    });
 
-    try {
-        const res = await fetch(`${LOCAL_AI_BASE_URL}/caption`, {
-            method: 'POST',
-            body: formData,
-            signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-
-        if (!res.ok) {
-            const errText = await res.text().catch(() => 'Unknown error');
-            throw new Error(`Local AI Helper error (${res.status}): ${errText}`);
-        }
-
-        const data = await res.json();
-        const caption = (data.caption || '').trim();
-        const keywords = data.keywords && data.keywords.length > 0
-            ? data.keywords
-            : extractKeywords(caption);
-
-        return {
-            imageId: data.imageId || options.imageId || fileName,
-            caption,
-            engine: 'local',
-            model: data.model || 'qwen3-vl-8b-instruct',
-            captionVersion: data.captionVersion || 1,
-            keywords,
-            durationMs: data.durationMs || 0
-        };
-    } catch (err) {
-        clearTimeout(timeoutId);
-        throw err;
+    if (!res.ok) {
+        const errText = await res.text().catch(() => 'Unknown error');
+        throw new Error(`Local AI Helper error (${res.status}): ${errText}`);
     }
+
+    const data = await res.json();
+    const caption = (data.caption || '').trim();
+    const keywords = data.keywords && data.keywords.length > 0
+        ? data.keywords
+        : extractKeywords(caption);
+
+    return {
+        imageId: data.imageId || options.imageId || fileName,
+        caption,
+        engine: 'local',
+        model: data.model || 'qwen3-vl-8b-instruct',
+        captionVersion: data.captionVersion || 1,
+        keywords,
+        durationMs: data.durationMs || 0
+    };
 }

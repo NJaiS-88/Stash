@@ -835,12 +835,6 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
                 if (rec && rec.status === 'available') {
                     const hasCaption = Boolean(rec.caption && typeof rec.caption === 'string' && rec.caption.trim().length > 0);
 
-                    // Auto-recover stale in-flight job if stuck > 5 minutes
-                    if (rec.captionStatus === 'processing' && (now - (rec.processingStartedAt || 0) > 300000)) {
-                        rec.captionStatus = hasCaption ? 'completed' : 'pending';
-                        rec.processingStartedAt = null;
-                    }
-
                     // Check if eligible for local AI upgrade from browser fallback
                     const isEligibleUpgrade = isLocalAiAvailable && hasCaption && (
                         rec.captionEngine === 'browser' ||
@@ -848,13 +842,13 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
                         rec.captionModel === 'vit-gpt2'
                     );
 
-                    // Check if pending: explicit 'pending' OR missing/empty caption without failure
-                    const isPending = (rec.captionStatus === 'pending' || (!hasCaption && rec.captionStatus !== 'failed' && rec.captionStatus !== 'processing'));
+                    // Uncaptioned photos need captioning!
+                    const needsCaption = !hasCaption && rec.captionStatus !== 'failed';
 
-                    // Check if retryable failure (< 3 retries, 30s backoff)
-                    const isRetryableFailed = rec.captionStatus === 'failed' && (rec.retryCount || 0) < 3 && (now - (rec.processingStartedAt || 0) > 30000);
+                    // Retryable failures (< 3 retries, 30s backoff)
+                    const isRetryableFailed = !hasCaption && rec.captionStatus === 'failed' && (rec.retryCount || 0) < 3 && (now - (rec.processingStartedAt || 0) > 30000);
 
-                    if (isPending || isRetryableFailed || isEligibleUpgrade) {
+                    if (needsCaption || isEligibleUpgrade || isRetryableFailed) {
                         rec.captionStatus = 'processing';
                         rec.indexingStatus = 'processing';
                         rec.processingStartedAt = now;
