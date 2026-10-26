@@ -1,9 +1,16 @@
 /**
- * Vision Model Web Worker — Florence-2-base-ft
- * Runs Microsoft's Florence-2 vision model off-thread via Transformers.js v3.
- * Supports WebGPU mixed-precision acceleration (FP16 vision + Q4 language decoder)
- * with graceful fallback to WASM (q4) and vit-gpt2.
- * Uses dedicated <MORE_DETAILED_CAPTION> task prompt capped at 100 tokens.
+ * Vision Model Web Worker — Florence-2-base-ft & vit-gpt2
+ * Runs vision caption models strictly off-thread via Transformers.js v3.
+ * React Main Thread remains 100% fluid for gallery scrolling, navigation, and user interactions.
+ *
+ * Architecture:
+ * React Main Thread (UI, Scrolling, Navigation)
+ *       ↓ (postMessage blob)
+ * AI Web Worker (Image Preprocessing & Resizing)
+ *       ↓
+ * Inference Engine (Florence-2 WebGPU/WASM -> vit-gpt2 WASM lightweight fallback)
+ *       ↓
+ * React Main Thread (Standardized Caption Output)
  */
 
 let pipelineInstance = null;
@@ -42,6 +49,46 @@ function parseFlorenceCaption(output) {
 
     // Strip special tokens e.g. <MORE_DETAILED_CAPTION>
     return String(caption).replace(/<[^>]+>/g, '').trim();
+}
+
+/**
+ * Preprocesses an image Blob off-thread inside the Web Worker.
+ * Downsamples high-resolution photos (e.g. 40MP phone shots) to max 768px using OffscreenCanvas
+ * so inference is lightning fast, memory footprint is low, and the React main thread never stutters.
+ */
+async function preprocessImageInWorker(blob) {
+    if (typeof createImageBitmap === 'undefined' || typeof OffscreenCanvas === 'undefined') {
+        return blob;
+    }
+
+    try {
+        const bmp = await createImageBitmap(blob);
+        const maxDim = 768;
+        let { width, height } = bmp;
+
+        if (width <= maxDim && height <= maxDim) {
+            bmp.close();
+            return blob;
+        }
+
+        if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+        } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+        }
+
+        const canvas = new OffscreenCanvas(width, height);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(bmp, 0, 0, width, height);
+        bmp.close();
+
+        const resizedBlob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+        return resizedBlob || blob;
+    } catch {
+        return blob;
+    }
 }
 
 async function initModel() {
@@ -89,9 +136,10 @@ async function initModel() {
                     self.postMessage({ type: 'MODEL_PROGRESS', progress: prog, model: 'Florence-2-base-ft' });
                 }
             });
+            pipelineInstance.modelKey = 'florence-2-base-ft';
         } catch (florenceErr) {
-            console.warn('[Worker] WebGPU Florence-2 init failed, falling back to WASM / vit-gpt2:', florenceErr);
-            // Fallback to WASM lightweight captioner if WebGPU or Florence-2 fails
+            console.warn('[Worker] WebGPU Florence-2 init failed, falling back to lightweight WASM vit-gpt2:', florenceErr);
+            // Fallback to WASM lightweight captioner (~80MB)
             activeDevice = 'wasm';
             pipelineInstance = await pipeline('image-to-text', 'Xenova/vit-gpt2-image-captioning', {
                 device: 'wasm',
@@ -99,13 +147,14 @@ async function initModel() {
                     self.postMessage({ type: 'MODEL_PROGRESS', progress: prog, model: 'vit-gpt2-fallback' });
                 }
             });
+            pipelineInstance.modelKey = 'vit-gpt2';
         }
 
         self.postMessage({
             type: 'STATUS',
             status: 'ready',
             device: activeDevice,
-            message: `Vision model ready (${activeDevice.toUpperCase()}).`
+            message: `Vision model ready (${pipelineInstance.modelKey || 'florence-2-base-ft'} on ${activeDevice.toUpperCase()}).`
         });
 
         return pipelineInstance;
@@ -136,15 +185,24 @@ self.onmessage = async (e) => {
         let objectUrl = null;
         try {
             const pipe = await initModel();
-            objectUrl = URL.createObjectURL(blob);
 
-            // Execute detailed captioning task
-            const output = await pipe(objectUrl, {
-                text: '<MORE_DETAILED_CAPTION>',
-                max_new_tokens: 100
-            });
+            // Off-thread preprocessing: downsample high-res photo in worker to prevent UI lag
+            const processedBlob = await preprocessImageInWorker(blob);
+            objectUrl = URL.createObjectURL(processedBlob);
 
-            const caption = parseFlorenceCaption(output);
+            let caption = '';
+            if (pipe.modelKey === 'vit-gpt2') {
+                const output = await pipe(objectUrl, { max_new_tokens: 50 });
+                caption = output[0]?.generated_text || '';
+            } else {
+                // Execute detailed captioning task on Florence-2
+                const output = await pipe(objectUrl, {
+                    text: '<MORE_DETAILED_CAPTION>',
+                    max_new_tokens: 100
+                });
+                caption = parseFlorenceCaption(output);
+            }
+
             const keywords = extractKeywords(caption);
 
             self.postMessage({
@@ -152,7 +210,7 @@ self.onmessage = async (e) => {
                 imageId,
                 caption: caption || `Photo: ${fileName}`,
                 engine: 'browser',
-                model: activeDevice === 'wasm' && !pipelineInstance?.modelId?.includes('Florence') ? 'vit-gpt2' : 'florence-2-base-ft',
+                model: pipe.modelKey || (activeDevice === 'wasm' ? 'vit-gpt2' : 'florence-2-base-ft'),
                 captionVersion: 1,
                 keywords: keywords.length > 0 ? keywords : extractKeywords(fileName),
                 device: activeDevice

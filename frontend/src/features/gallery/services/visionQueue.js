@@ -16,7 +16,6 @@ import {
     getExistingCaptionByContentHash
 } from './galleryDb';
 import { resolveFileByPath } from './fileSystem';
-import { describeImage } from './visionModel';
 import { checkLocalAiHealth, requestLocalCaption } from './localAiClient';
 
 class VisionQueueManager {
@@ -302,11 +301,29 @@ class VisionQueueManager {
                     }
                 }
 
-                // ---------------- TIER 2: BROWSER AI FALLBACK ----------------
+                // ---------------- TIER 2: BROWSER AI WEB WORKER FALLBACK ----------------
+                // Runs strictly off the React main thread inside a dedicated Web Worker.
+                // React Main Thread: Gallery, Scrolling, Navigation (zero inference freeze).
                 if (!result || !result.caption) {
+                    if (!this.worker) {
+                        this.initWorker();
+                    }
+
                     if (this.worker) {
                         const workerRes = await new Promise((resolve) => {
-                            this.activeResolve = resolve;
+                            const timer = setTimeout(() => {
+                                console.warn('[VisionQueue] Web Worker timed out for', img.fileName);
+                                if (this.activeResolve) {
+                                    this.activeResolve(null);
+                                    this.activeResolve = null;
+                                }
+                            }, 60000); // 60s safety timeout
+
+                            this.activeResolve = (data) => {
+                                clearTimeout(timer);
+                                resolve(data);
+                            };
+
                             this.worker.postMessage({
                                 type: 'PROCESS_IMAGE',
                                 imageId: img.imageId,
@@ -314,29 +331,17 @@ class VisionQueueManager {
                                 fileName: img.fileName
                             });
                         });
-                        if (workerRes) {
+
+                        if (workerRes && workerRes.caption) {
                             result = {
                                 imageId: workerRes.imageId || img.imageId,
                                 caption: workerRes.caption,
                                 engine: workerRes.engine || 'browser',
                                 model: workerRes.model || 'florence-2-base-ft',
                                 captionVersion: workerRes.captionVersion || 1,
-                                keywords: workerRes.keywords
+                                keywords: workerRes.keywords || []
                             };
                         }
-                    }
-
-                    // Emergency main-thread fallback if worker yielded nothing
-                    if (!result || !result.caption) {
-                        const directRes = await describeImage(file, img.imageId);
-                        result = {
-                            imageId: directRes.imageId || img.imageId,
-                            caption: directRes.caption,
-                            engine: directRes.engine || 'browser',
-                            model: directRes.model || 'florence-2-base-ft',
-                            captionVersion: directRes.captionVersion || 1,
-                            keywords: directRes.keywords
-                        };
                     }
                 }
 

@@ -18,7 +18,6 @@ import {
     updateImageAI,
     resetStaleProcessingImages
 } from '../services/galleryDb';
-import { describeImage } from '../services/visionModel';
 
 export const useGallery = () => {
     const context = useContext(GalleryContext);
