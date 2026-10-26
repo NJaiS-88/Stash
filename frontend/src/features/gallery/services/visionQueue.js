@@ -170,8 +170,14 @@ class VisionQueueManager {
         let processedCount = 0;
 
         while (this.isRunning && !this.isPaused) {
-            // Claim next available pending image atomically following 5-tier queue priority (O(1) indexed lookup)
-            const img = await claimNextPendingImage({ isLocalAiAvailable: this.status.activeEngine === 'local' });
+            let img = null;
+            try {
+                img = await claimNextPendingImage({ isLocalAiAvailable: this.status.activeEngine === 'local' });
+            } catch (claimErr) {
+                console.warn('[VisionQueue] Error claiming pending image:', claimErr);
+                break;
+            }
+
             if (!img) {
                 console.log('[VisionQueue] All pending images have been processed.');
                 break;
@@ -225,8 +231,11 @@ class VisionQueueManager {
             this.status.modelStatus = `Analyzing ${img.fileName} (${this.status.current + 1}/${this.status.total}) via ${engineLabel}...`;
             this.notify();
 
+            let file = null;
+            let result = null;
+
             try {
-                const file = await resolveFileByPath(folder.handle, img.relativePath);
+                file = await resolveFileByPath(folder.handle, img.relativePath);
                 if (!file) {
                     console.warn('[VisionQueue] File could not be resolved:', img.relativePath);
                     await saveImageRecord({
@@ -240,8 +249,6 @@ class VisionQueueManager {
                     });
                     continue;
                 }
-
-                let result = null;
 
                 // ---------------- STEP 0: INSTANT HASH DEDUPLICATION ----------------
                 // Ensure contentHash is present (computed lazily in microseconds if missing)
@@ -372,6 +379,7 @@ class VisionQueueManager {
                     indexingStatus: 'failed'
                 });
             } finally {
+                file = null;
                 result = null;
             }
         }

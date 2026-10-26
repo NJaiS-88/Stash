@@ -352,7 +352,12 @@ export async function getMissingImages() {
  * @returns {Promise<Array>}
  */
 export async function getAvailableImages() {
-    return getImagesByStatus('available');
+    try {
+        const all = await getAllImages();
+        return all.filter(img => img && img.status !== 'missing');
+    } catch {
+        return getImagesByStatus('available');
+    }
 }
 
 /**
@@ -429,16 +434,28 @@ export async function purgeMissingImages() {
 export async function getPendingImages({ isLocalAiAvailable = false } = {}) {
     try {
         const available = await getAvailableImages();
+        const now = Date.now();
         return available.filter(img => {
-            if (img.status !== 'available') return false;
-            // 1. Pending (Priority 1: new, Priority 2: modified, Priority 3: never-captioned)
-            if (img.captionStatus === 'pending') return true;
-            // 2. Interrupted/stale processing jobs from dead sessions (5-minute safety threshold)
-            if (img.captionStatus === 'processing' && (!img.processingStartedAt || (Date.now() - img.processingStartedAt > 300000))) return true;
+            if (img.status === 'missing') return false;
+            const hasCaption = Boolean(img.caption && typeof img.caption === 'string' && img.caption.trim().length > 0);
+
+            // 1. Never captioned / pending
+            if (!hasCaption && (!img.captionStatus || img.captionStatus === 'pending')) return true;
+
+            // 2. Interrupted/stale processing jobs from dead sessions (45-second safety threshold)
+            if (!hasCaption && img.captionStatus === 'processing' && (!img.processingStartedAt || (now - img.processingStartedAt > 45000))) return true;
+
             // 3. Retryable failed jobs (Priority 4)
-            if (img.captionStatus === 'failed' && (img.retryCount || 0) < 3) return true;
+            if (!hasCaption && img.captionStatus === 'failed' && (img.retryCount || 0) < 3) return true;
+
             // 4. Browser captions eligible for local AI upgrade (Priority 5)
-            if (isLocalAiAvailable && img.captionStatus === 'completed' && (img.captionEngine === 'browser' || img.captionModel === 'florence-2-base-ft' || img.captionModel === 'vit-gpt2')) return true;
+            if (isLocalAiAvailable && hasCaption && (
+                img.captionEngine === 'browser' ||
+                img.captionModel === 'florence-2-base-ft' ||
+                img.captionModel === 'vit-gpt2' ||
+                (typeof img.caption === 'string' && img.caption.includes('A vibrant scene featuring clear outdoor lighting'))
+            )) return true;
+
             return false;
         });
     } catch (error) {
@@ -832,28 +849,34 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
                 }
 
                 const rec = cursor.value;
-                if (rec && rec.status === 'available') {
+                if (rec && rec.status !== 'missing') {
                     const hasCaption = Boolean(rec.caption && typeof rec.caption === 'string' && rec.caption.trim().length > 0);
 
                     // Check if eligible for local AI upgrade from browser fallback
                     const isEligibleUpgrade = isLocalAiAvailable && hasCaption && (
                         rec.captionEngine === 'browser' ||
                         rec.captionModel === 'florence-2-base-ft' ||
-                        rec.captionModel === 'vit-gpt2'
+                        rec.captionModel === 'vit-gpt2' ||
+                        (typeof rec.caption === 'string' && rec.caption.includes('A vibrant scene featuring clear outdoor lighting'))
                     );
 
                     // Uncaptioned photos need captioning!
-                    const needsCaption = !hasCaption && rec.captionStatus !== 'failed';
+                    const isPending = !hasCaption && (
+                        !rec.captionStatus ||
+                        rec.captionStatus === 'pending' ||
+                        (rec.captionStatus === 'processing' && (now - (rec.processingStartedAt || 0) > 45000))
+                    );
 
-                    // Retryable failures (< 3 retries, 30s backoff)
-                    const isRetryableFailed = !hasCaption && rec.captionStatus === 'failed' && (rec.retryCount || 0) < 3 && (now - (rec.processingStartedAt || 0) > 30000);
+                    // Retryable failures (< 3 retries, 15s backoff)
+                    const isRetryableFailed = !hasCaption && rec.captionStatus === 'failed' && (rec.retryCount || 0) < 3 && (now - (rec.processingStartedAt || 0) > 15000);
 
-                    if (needsCaption || isEligibleUpgrade || isRetryableFailed) {
+                    if (isPending || isEligibleUpgrade || isRetryableFailed) {
                         rec.captionStatus = 'processing';
                         rec.indexingStatus = 'processing';
                         rec.processingStartedAt = now;
-                        cursor.update(rec);
-                        finish(rec);
+                        const updateReq = cursor.update(rec);
+                        updateReq.onsuccess = () => finish(rec);
+                        updateReq.onerror = () => finish(rec);
                         return;
                     }
                 }
