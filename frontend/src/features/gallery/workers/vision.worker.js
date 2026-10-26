@@ -85,6 +85,9 @@ async function preprocessImageInWorker(blob) {
         bmp.close();
 
         const resizedBlob = await canvas.convertToBlob({ type: 'image/jpeg', quality: 0.85 });
+        ctx.clearRect(0, 0, width, height);
+        canvas.width = 1;
+        canvas.height = 1;
         return resizedBlob || blob;
     } catch {
         return blob;

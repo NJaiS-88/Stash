@@ -4,6 +4,7 @@ import { useAuth } from '../hooks/useAuth';
 import { useGallery } from '../../gallery/hooks/useGallery';
 import { useNavigate } from 'react-router';
 import PrivateAiBanner from '../../gallery/components/PrivateAiBanner';
+import AiIndexingBanner from '../../gallery/components/AiIndexingBanner';
 import { isMobileOrTabletDevice } from '../../gallery/services/fileSystem';
 
 const Dashboard = () => {
@@ -220,92 +221,7 @@ const Dashboard = () => {
 
                 <PrivateAiBanner />
 
-                {(indexingState.isIndexing || isAIPaused) && (
-                    <div style={{
-                        backgroundColor: isAIPaused ? '#fffbeb' : (indexingState.activeEngine === 'local' ? '#f0fdf4' : '#f5f3ff'),
-                        border: `1px solid ${isAIPaused ? '#fde68a' : (indexingState.activeEngine === 'local' ? '#bbf7d0' : '#ddd6fe')}`,
-                        borderRadius: 'var(--radius)',
-                        padding: '16px 20px',
-                        marginBottom: '20px',
-                        boxShadow: 'var(--shadow-subtle)'
-                    }}>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                                <span style={{
-                                    fontSize: '0.9rem',
-                                    fontWeight: 600,
-                                    color: isAIPaused ? '#92400e' : (indexingState.activeEngine === 'local' ? '#166534' : '#5b21b6')
-                                }}>
-                                    {isAIPaused
-                                        ? '⏸ AI Inference Paused'
-                                        : (indexingState.activeEngine === 'local'
-                                            ? '🟢 Stash Local AI (Qwen3-VL-8B)'
-                                            : '⚡ Browser AI Fallback (Florence-2)')} ({indexingState.current} / {indexingState.total})
-                                </span>
-                                {indexingState.isIndexing ? (
-                                    <button
-                                        onClick={pauseAIIndexing}
-                                        style={{
-                                            fontSize: '0.75rem',
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            backgroundColor: '#ede9fe',
-                                            border: '1px solid #c4b5fd',
-                                            color: '#6d28d9',
-                                            cursor: 'pointer'
-                                        }}
-                                    >
-                                        Pause
-                                    </button>
-                                ) : (
-                                    <button
-                                        onClick={resumeAIIndexing}
-                                        style={{
-                                            fontSize: '0.75rem',
-                                            padding: '2px 8px',
-                                            borderRadius: '4px',
-                                            backgroundColor: '#fef3c7',
-                                            border: '1px solid #fde68a',
-                                            color: '#b45309',
-                                            cursor: 'pointer'
-                                        }}
-                                    >
-                                        Resume
-                                    </button>
-                                )}
-                            </div>
-                            <span style={{
-                                fontSize: '0.75rem',
-                                fontWeight: 600,
-                                color: indexingState.activeEngine === 'local' ? '#15803d' : '#7c3aed'
-                            }}>
-                                🔒 100% Client-Side Privacy • {indexingState.activeEngine === 'local' ? 'Loopback (127.0.0.1)' : 'Web Worker'}
-                            </span>
-                        </div>
-                        <div style={{
-                            height: '8px',
-                            width: '100%',
-                            backgroundColor: isAIPaused ? '#fef3c7' : (indexingState.activeEngine === 'local' ? '#dcfce7' : '#ede9fe'),
-                            borderRadius: '4px',
-                            overflow: 'hidden',
-                            marginBottom: '8px'
-                        }}>
-                            <div style={{
-                                height: '100%',
-                                width: `${indexingState.total ? (indexingState.current / indexingState.total) * 100 : 0}%`,
-                                backgroundColor: isAIPaused ? '#f59e0b' : (indexingState.activeEngine === 'local' ? '#22c55e' : '#7c3aed'),
-                                transition: 'width 0.3s ease'
-                            }} />
-                        </div>
-                        <p style={{
-                            fontSize: '0.8rem',
-                            color: isAIPaused ? '#92400e' : (indexingState.activeEngine === 'local' ? '#166534' : '#6d28d9'),
-                            margin: 0
-                        }}>
-                            {indexingState.modelStatus} {indexingState.currentFile ? `(${indexingState.currentFile})` : ''}
-                        </p>
-                    </div>
-                )}
+                <AiIndexingBanner />
 
                 {scanMessage && (
                     <div style={{

@@ -5,6 +5,7 @@ import ConnectFolder from '../components/ConnectFolder';
 import GalleryGrid from '../components/GalleryGrid';
 import GallerySearch from '../components/GallerySearch';
 import PrivateAiBanner from '../components/PrivateAiBanner';
+import AiIndexingBanner from '../components/AiIndexingBanner';
 import { useGallery } from '../hooks/useGallery';
 import { isMobileOrTabletDevice } from '../services/fileSystem';
 
@@ -33,6 +34,7 @@ export default function Gallery() {
 
             <main style={{ maxWidth: '1100px', margin: '32px auto', padding: '0 24px', width: '100%' }}>
                 <PrivateAiBanner />
+                <AiIndexingBanner />
 
                 {!activeFolder ? (
                     folders.length === 0 ? (
@@ -96,69 +98,6 @@ export default function Gallery() {
                                     <h2 style={{ fontSize: '1.25rem', fontWeight: 700, color: 'var(--text-primary)' }}>
                                         {activeFolder.name}
                                     </h2>
-
-                                    {/* Real-time AI Indexing Status Badge */}
-                                    {indexingState?.isIndexing && (
-                                        <div style={{
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '6px',
-                                            backgroundColor: indexingState.activeEngine === 'local' ? '#f0fdf4' : '#eff6ff',
-                                            border: `1px solid ${indexingState.activeEngine === 'local' ? '#bbf7d0' : '#bfdbfe'}`,
-                                            borderRadius: '20px',
-                                            padding: '3px 10px',
-                                            fontSize: '0.75rem',
-                                            color: indexingState.activeEngine === 'local' ? '#166534' : '#1d4ed8'
-                                        }}>
-                                            <span style={{ fontWeight: 600 }}>
-                                                {indexingState.activeEngine === 'local' ? '🟢 Local AI' : '⚡ Browser AI'}: {indexingState.current}/{indexingState.total}
-                                            </span>
-                                            <button
-                                                onClick={pauseAIIndexing}
-                                                style={{
-                                                    background: 'none',
-                                                    border: 'none',
-                                                    cursor: 'pointer',
-                                                    color: indexingState.activeEngine === 'local' ? '#15803d' : '#2563eb',
-                                                    textDecoration: 'underline',
-                                                    fontSize: '0.72rem',
-                                                    padding: 0
-                                                }}
-                                            >
-                                                Pause
-                                            </button>
-                                        </div>
-                                    )}
-
-                                    {isAIPaused && (
-                                        <div style={{
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            gap: '6px',
-                                            backgroundColor: '#fffbeb',
-                                            border: '1px solid #fde68a',
-                                            borderRadius: '20px',
-                                            padding: '3px 10px',
-                                            fontSize: '0.75rem',
-                                            color: '#b45309'
-                                        }}>
-                                            <span>⏸ Paused</span>
-                                            <button
-                                                onClick={resumeAIIndexing}
-                                                style={{
-                                                    background: 'none',
-                                                    border: 'none',
-                                                    cursor: 'pointer',
-                                                    color: '#b45309',
-                                                    textDecoration: 'underline',
-                                                    fontSize: '0.72rem',
-                                                    padding: 0
-                                                }}
-                                            >
-                                                Resume
-                                            </button>
-                                        </div>
-                                    )}
                                 </div>
                                 <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
                                     🔒 Local files only — never uploaded to any server.

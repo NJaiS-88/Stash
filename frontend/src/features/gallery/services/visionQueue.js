@@ -389,6 +389,14 @@ class VisionQueueManager {
                     captionError: err?.message || 'Caption inference failed',
                     indexingStatus: 'failed'
                 });
+            } finally {
+                // Phase 23: 8k-20k Memory Optimization — Immediately release decoded file buffers
+                result = null;
+
+                // Micro-yield to browser event loop every 20 items so V8 GC can sweep RAM
+                if (processedCount % 20 === 0) {
+                    await new Promise(r => setTimeout(r, 0));
+                }
             }
         }
 

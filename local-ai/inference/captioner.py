@@ -128,6 +128,16 @@ async def generate_caption(
 
         finally:
             model_mgr._is_busy = False
-            # Clean up memory references
-            del pil_img
-            del jpeg_bytes
+            # Phase 23: Release decoded image buffers immediately (8k-20k memory optimization)
+            if "pil_img" in locals():
+                del pil_img
+            if "jpeg_bytes" in locals():
+                del jpeg_bytes
+            if "b64_image" in locals():
+                del b64_image
+            if "data_uri" in locals():
+                del data_uri
+            if "messages" in locals():
+                del messages
+            import gc
+            gc.collect()

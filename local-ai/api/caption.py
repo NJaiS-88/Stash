@@ -60,3 +60,6 @@ async def caption_image(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Local captioning inference failed: {str(e)}"
         )
+    finally:
+        if "image_bytes" in locals():
+            del image_bytes
