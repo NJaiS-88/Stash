@@ -99,6 +99,22 @@ class PineconeDeleteRequest(BaseModel):
     userId: str = Field(..., description="User ID for strict namespace isolation and ownership")
     imageIds: List[str] = Field(..., description="List of Image IDs to purge from namespace")
 
+# Phase 33: Missing Vector Handling Schemas
+class PineconeDeactivateRequest(BaseModel):
+    userId: str = Field(..., description="User ID for strict namespace isolation")
+    imageIds: List[str] = Field(..., description="Image IDs transitioning to 'missing'")
+
+class PineconeRestoreItem(BaseModel):
+    imageId: str = Field(..., description="Restored Image ID")
+    caption: str = Field(..., description="Preserved semantic caption from MongoDB")
+    keywords: Optional[List[str]] = Field(default=[], description="Preserved keywords")
+    retrievalText: Optional[str] = None
+    embedding: Optional[List[float]] = None
+
+class PineconeRestoreRequest(BaseModel):
+    userId: str = Field(..., description="User ID for strict namespace isolation")
+    items: List[PineconeRestoreItem] = Field(..., description="Restored images to re-upsert into Pinecone")
+
 
 @app.get("/health")
 def health_check():
@@ -251,6 +267,70 @@ def pinecone_status(userId: Optional[str] = None):
     Phase 32: Telemetry status of Pinecone connection and user namespace isolation.
     """
     return pinecone_manager.get_status(user_id=userId)
+
+
+# =======================================================
+# Phase 33: Missing Vector Handling Endpoints
+# A101 -> missing: remove/deactivate active vector
+# A101 returns (fingerprint match): recreate/re-upsert vector (ZERO VLM inference)
+# =======================================================
+
+@app.post("/pinecone/deactivate")
+def pinecone_deactivate(req: PineconeDeactivateRequest):
+    """
+    Phase 33: When an image transitions to 'missing':
+    Removes/deactivates the active vector from Pinecone user namespace.
+    MongoDB retains all captions, fingerprints, and metadata.
+    """
+    if not req.userId or not req.userId.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="userId is required for user-isolated Pinecone deactivation"
+        )
+    res = pinecone_manager.delete_vectors(user_id=req.userId.strip(), image_ids=req.imageIds)
+    return {
+        "success": True,
+        "deactivatedCount": res.get("deletedCount", len(req.imageIds)),
+        "namespace": req.userId.strip(),
+        "action": "deactivated"
+    }
+
+
+@app.post("/pinecone/restore")
+def pinecone_restore(req: PineconeRestoreRequest):
+    """
+    Phase 33: When an image is restored (fingerprint match):
+    MongoDB status is restored to 'available'.
+    Recreates/re-upserts the embedding/vector into Pinecone user namespace.
+    NO VLM inference required — re-uses preserved caption/retrieval text!
+    """
+    if not req.userId or not req.userId.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="userId is required for user-isolated Pinecone restore"
+        )
+
+    vectors_to_upsert = []
+    for item in req.items:
+        # Re-use existing embedding or compute from preserved retrievalText
+        vector = item.embedding
+        if not vector or not len(vector):
+            retrieval_text = item.retrievalText or construct_retrieval_text(item.caption, item.keywords)
+            vector = embed_pipeline.embed_text(retrieval_text)
+
+        vectors_to_upsert.append({
+            "imageId": item.imageId,
+            "embedding": vector
+        })
+
+    res = pinecone_manager.upsert_vectors(user_id=req.userId.strip(), items=vectors_to_upsert)
+    return {
+        "success": True,
+        "restoredCount": res.get("upsertedCount", len(vectors_to_upsert)),
+        "namespace": req.userId.strip(),
+        "vlmInferenceRequired": False,
+        "action": "restored"
+    }
 
 
 if __name__ == "__main__":

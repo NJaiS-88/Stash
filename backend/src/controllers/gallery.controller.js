@@ -267,6 +267,13 @@ const updateImageMetadata = async (req, res) => {
             return res.status(404).json({ message: `Image with ID ${imageId} not found for this user` });
         }
 
+        // Phase 33: Missing Vector Handling
+        if (record.status === 'missing') {
+            deleteFromPinecone(userId, [imageId]).catch(() => {});
+        } else if (record.status === 'available') {
+            syncToPinecone(userId, [record]).catch(() => {});
+        }
+
         return res.status(200).json({
             message: "Image metadata updated successfully",
             image: {
@@ -363,7 +370,7 @@ const reconcileMetadata = async (req, res) => {
         // Fetch all matching records from user's cloud index
         const cloudRecords = await Metadata.find(
             { imageId: { $in: localIds }, userId },
-            'imageId fingerprint caption status'
+            'imageId fingerprint caption status keywords retrievalText'
         ).lean();
 
         const cloudMap = new Map(cloudRecords.map(r => [r.imageId, r]));
@@ -372,6 +379,8 @@ const reconcileMetadata = async (req, res) => {
         const upToDate = [];
         const deletedInCloud = [];
         const availabilitySyncOps = [];
+        const deactivatingIds = [];
+        const restoringRecords = [];
 
         for (const [localId, localItem] of localMap.entries()) {
             const cloudRec = cloudMap.get(localId);
@@ -380,7 +389,7 @@ const reconcileMetadata = async (req, res) => {
             } else if (cloudRec.status === 'deleted') {
                 deletedInCloud.push(localId);
             } else {
-                // Phase 30: Availability Synchronization
+                // Phase 30 & Phase 33: Availability Synchronization & Vector Lifecycle
                 // If local status differs from cloud status (available <-> missing), update MongoDB
                 // while strictly keeping caption & fingerprint intact.
                 if (localItem.status && localItem.status !== cloudRec.status && localItem.status !== 'deleted') {
@@ -395,6 +404,16 @@ const reconcileMetadata = async (req, res) => {
                             }
                         }
                     });
+
+                    // Phase 33: Track vector deactivation vs restoration
+                    if (localItem.status === 'missing') {
+                        deactivatingIds.push(localId);
+                    } else if (localItem.status === 'available') {
+                        restoringRecords.push({
+                            ...cloudRec,
+                            status: 'available'
+                        });
+                    }
                 }
                 upToDate.push(localId);
             }
@@ -402,7 +421,19 @@ const reconcileMetadata = async (req, res) => {
 
         if (availabilitySyncOps.length > 0) {
             await Metadata.bulkWrite(availabilitySyncOps);
-            console.log(`[Reconcile] Phase 30: Synchronized availability for ${availabilitySyncOps.length} photo(s) in cloud.`);
+            console.log(`[Reconcile] Phase 30/33: Synchronized availability for ${availabilitySyncOps.length} photo(s) in cloud.`);
+
+            // Phase 33: Deactivate vectors for missing photos from Pinecone
+            if (deactivatingIds.length > 0) {
+                deleteFromPinecone(userId, deactivatingIds).catch(() => {});
+                console.log(`[Reconcile] Phase 33: Deactivated ${deactivatingIds.length} missing vector(s) in Pinecone.`);
+            }
+
+            // Phase 33: Recreate / re-upsert vectors for restored photos (No VLM inference)
+            if (restoringRecords.length > 0) {
+                syncToPinecone(userId, restoringRecords).catch(() => {});
+                console.log(`[Reconcile] Phase 33: Re-upserted ${restoringRecords.length} restored vector(s) in Pinecone (Zero VLM inference).`);
+            }
         }
 
         return res.status(200).json({
@@ -412,7 +443,9 @@ const reconcileMetadata = async (req, res) => {
             upToDateCount: upToDate.length,
             deletedInCloudCount: deletedInCloud.length,
             deletedInCloud,
-            availabilitySynchronizedCount: availabilitySyncOps.length
+            availabilitySynchronizedCount: availabilitySyncOps.length,
+            deactivatedVectorCount: deactivatingIds.length,
+            restoredVectorCount: restoringRecords.length
         });
     } catch (err) {
         console.error('[GalleryController] Error reconciling metadata:', err);
@@ -422,11 +455,17 @@ const reconcileMetadata = async (req, res) => {
 
 /**
  * POST /api/gallery/availability
- * Phase 30: Availability Synchronization
- * When an image transitions: available <-> missing:
- * Updates status in MongoDB for { imageId, userId: req.user.id }.
- * Strictly preserves caption, fingerprint, and all semantic information.
- * Does NOT immediately permanently delete semantic information.
+ * Phase 30 & Phase 33: Availability Synchronization & Missing Vector Handling
+ *
+ * When an image transitions:
+ * 1. available -> missing:
+ *    - MongoDB: update status to 'missing', keep all metadata (caption, keywords, fingerprint)
+ *    - Pinecone: remove/deactivate active vector from user namespace so it's not retrieved
+ *
+ * 2. missing -> available (e.g. fingerprint match or restored file):
+ *    - MongoDB: update status to 'available'
+ *    - Pinecone: recreate/re-upsert vector embedding using preserved metadata
+ *    - Crucial: NO VLM inference required because content hasn't changed!
  */
 const syncAvailability = async (req, res) => {
     try {
@@ -448,11 +487,48 @@ const syncAvailability = async (req, res) => {
 
         const result = await Metadata.bulkWrite(bulkOps);
 
+        // Phase 33 — Missing Vector Handling
+        const missingIds = updates
+            .filter(u => u.status === 'missing')
+            .map(u => u.imageId);
+
+        const restoredIds = updates
+            .filter(u => u.status === 'available')
+            .map(u => u.imageId);
+
+        // 1. Deactivate missing vectors from Pinecone user namespace
+        if (missingIds.length > 0) {
+            deleteFromPinecone(userId, missingIds).catch(err => {
+                console.warn('[GalleryController] Pinecone vector deactivation error:', err.message);
+            });
+            console.log(`[Phase 33] Deactivated ${missingIds.length} missing vector(s) in Pinecone for user ${userId}. Preserved MongoDB metadata.`);
+        }
+
+        // 2. Recreate / re-upsert restored vectors into Pinecone without VLM inference
+        if (restoredIds.length > 0) {
+            Metadata.find({
+                userId,
+                imageId: { $in: restoredIds },
+                status: 'available'
+            }).lean().then(restoredRecords => {
+                if (restoredRecords && restoredRecords.length > 0) {
+                    syncToPinecone(userId, restoredRecords).catch(err => {
+                        console.warn('[GalleryController] Pinecone vector restoration error:', err.message);
+                    });
+                    console.log(`[Phase 33] Re-upserted ${restoredRecords.length} restored vector(s) to Pinecone for user ${userId} (No VLM inference).`);
+                }
+            }).catch(err => {
+                console.warn('[GalleryController] Error querying restored metadata for Pinecone:', err.message);
+            });
+        }
+
         return res.status(200).json({
             message: "Availability synchronized successfully",
             matchedCount: result.matchedCount,
             modifiedCount: result.modifiedCount,
-            syncedCount: updates.length
+            syncedCount: updates.length,
+            deactivatedCount: missingIds.length,
+            restoredCount: restoredIds.length
         });
     } catch (err) {
         console.error('[GalleryController] Error synchronizing availability:', err);
