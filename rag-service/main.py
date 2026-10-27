@@ -115,6 +115,23 @@ class PineconeRestoreRequest(BaseModel):
     userId: str = Field(..., description="User ID for strict namespace isolation")
     items: List[PineconeRestoreItem] = Field(..., description="Restored images to re-upsert into Pinecone")
 
+# Phase 34: Semantic Search Schemas
+class SemanticSearchRequest(BaseModel):
+    query: str = Field(..., min_length=1, max_length=500, description="Natural language search query")
+    userId: str = Field(..., description="Authenticated user ID for strict namespace isolation")
+    top_k: Optional[int] = Field(default=10, ge=1, le=50)
+
+class SemanticSearchResultItem(BaseModel):
+    imageId: str = Field(..., description="Image identifier")
+    score: float = Field(..., description="Cosine similarity score")
+    userId: str = Field(..., description="User identifier")
+
+class SemanticSearchResponse(BaseModel):
+    query: str
+    userId: str
+    results: List[SemanticSearchResultItem]
+    count: int
+
 
 @app.get("/health")
 def health_check():
@@ -331,6 +348,53 @@ def pinecone_restore(req: PineconeRestoreRequest):
         "vlmInferenceRequired": False,
         "action": "restored"
     }
+
+
+# =======================================================
+# Phase 34: Semantic Search Pipeline
+# query -> Zod -> Auth -> text embedding -> Pinecone -> user-scoped retrieval -> [ { imageId, score } ]
+# =======================================================
+
+@app.post("/semantic-search", response_model=SemanticSearchResponse)
+def semantic_search(req: SemanticSearchRequest):
+    """
+    Phase 34: Natural Language Semantic Search over Pinecone
+    1. Computes text embedding for natural language query (Text embedding ONLY).
+    2. Queries Pinecone index strictly within the user's namespace.
+    3. Returns identifiers (imageId) and similarity scores.
+    """
+    if not req.userId or not req.userId.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="userId is required for user-isolated semantic search"
+        )
+
+    # 1. Text embedding ONLY
+    q_vec = embed_pipeline.embed_text(req.query.strip())
+
+    # 2. Pinecone query (user-scoped: namespace=userId, filter={userId: userId})
+    matches = pinecone_manager.query_vectors(
+        user_id=req.userId.strip(),
+        vector=q_vec,
+        top_k=req.top_k or 10
+    )
+
+    # 3. Return identifiers + scores
+    results = [
+        SemanticSearchResultItem(
+            imageId=str(m["imageId"]),
+            score=round(float(m["score"]), 4),
+            userId=req.userId.strip()
+        )
+        for m in matches
+    ]
+
+    return SemanticSearchResponse(
+        query=req.query,
+        userId=req.userId.strip(),
+        results=results,
+        count=len(results)
+    )
 
 
 if __name__ == "__main__":

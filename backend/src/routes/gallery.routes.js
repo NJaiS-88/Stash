@@ -83,6 +83,13 @@ router.post(
 );
 
 router.post(
+    '/semantic-search',
+    enforceCloudPrivacyBoundary,
+    validateRequest(searchRequestSchema),
+    searchMetadata
+);
+
+router.post(
     '/ask',
     enforceCloudPrivacyBoundary,
     validateRequest(askRequestSchema),

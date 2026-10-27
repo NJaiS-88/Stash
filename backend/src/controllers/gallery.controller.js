@@ -538,27 +538,97 @@ const syncAvailability = async (req, res) => {
 
 /**
  * POST /api/gallery/search
- * Phase 29: Semantic & keyword search across user's indexed photo captions.
- * Query strictly pairs: { ...(imageId ? { imageId } : {}), userId: req.user.id }
- * Never { imageId } alone.
+ * Phase 34 — Semantic Search Pipeline
+ *
+ * Query
+ *   ↓
+ * Zod validation (searchRequestSchema)
+ *   ↓
+ * Auth (req.user.id)
+ *   ↓
+ * Text Embedding (models/text-embedding-004 via RAG service)
+ *   ↓
+ * Pinecone vector search
+ *   ↓
+ * User-scoped retrieval (namespace=userId + ownership validation)
+ *   ↓
+ * Return identifiers (imageId) + similarity scores
  */
 const searchMetadata = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { query, limit, imageId } = req.validatedData;
+        const { query, limit, top_k, imageId } = req.validatedData;
+        const requestedLimit = top_k || limit || 20;
 
-        // Clean search query tokens
+        const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000';
+
+        // 1. Text embedding & Pinecone user-scoped retrieval via RAG service
+        let pineconeMatches = [];
+        try {
+            const semanticRes = await fetch(`${RAG_SERVICE_URL}/semantic-search`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    query,
+                    userId: String(userId),
+                    top_k: requestedLimit
+                }),
+                signal: AbortSignal.timeout(6000)
+            });
+
+            if (semanticRes.ok) {
+                const semanticData = await semanticRes.json();
+                pineconeMatches = semanticData.results || [];
+            }
+        } catch (semanticErr) {
+            console.log('[GalleryController] Notice: Pinecone semantic search fallback to keyword:', semanticErr.message);
+        }
+
+        // 2. If Pinecone returned user-scoped matches, verify availability and return identifiers + scores
+        if (pineconeMatches.length > 0) {
+            const matchIds = pineconeMatches.map(m => m.imageId);
+            const queryFilter = {
+                userId,
+                imageId: { $in: matchIds },
+                status: 'available'
+            };
+            if (imageId) queryFilter.imageId = imageId;
+
+            const records = await Metadata.find(queryFilter).lean();
+            const recordMap = new Map(records.map(r => [r.imageId, r]));
+
+            const semanticResults = [];
+            for (const m of pineconeMatches) {
+                const rec = recordMap.get(m.imageId);
+                if (rec) {
+                    semanticResults.push({
+                        imageId: m.imageId,
+                        score: m.score,
+                        caption: rec.caption,
+                        keywords: rec.keywords || [],
+                        captionEngine: rec.captionEngine
+                    });
+                }
+            }
+
+            return res.status(200).json({
+                query,
+                total: semanticResults.length,
+                results: semanticResults,
+                engine: 'pinecone-semantic'
+            });
+        }
+
+        // 3. Fallback: Keyword matching if vector index is empty or offline
         const cleanQuery = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
         const tokens = cleanQuery.split(/\s+/).filter(t => t.length > 1);
 
         if (tokens.length === 0) {
-            return res.status(200).json({ results: [], total: 0 });
+            return res.status(200).json({ query, results: [], total: 0 });
         }
 
-        // Build regex filters for full-caption and keyword matching
         const regexPatterns = tokens.map(t => new RegExp(t, 'i'));
-
-        const filter = {
+        const fallbackFilter = {
             userId,
             status: 'available',
             $or: [
@@ -566,53 +636,49 @@ const searchMetadata = async (req, res) => {
                 { keywords: { $in: tokens } }
             ]
         };
+        if (imageId) fallbackFilter.imageId = imageId;
 
-        // If scoped to a specific imageId, pair { imageId, userId }
-        if (imageId) {
-            filter.imageId = imageId;
-        }
+        const candidates = await Metadata.find(fallbackFilter).limit(requestedLimit * 2).lean();
 
-        const candidates = await Metadata.find(filter).limit(limit * 2).lean();
-
-        // Rank candidates by token matches
         const scored = candidates.map(item => {
-            let score = 0;
+            let score = 0.0;
             const captionLower = (item.caption || '').toLowerCase();
             const keywordsLower = (item.keywords || []).map(k => k.toLowerCase());
 
-            // Exact phrase match bonus
-            if (captionLower.includes(cleanQuery)) {
-                score += 10;
-            }
+            if (captionLower.includes(cleanQuery)) score += 0.5;
 
             for (const token of tokens) {
-                if (captionLower.includes(token)) score += 3;
-                if (keywordsLower.includes(token)) score += 2;
+                if (captionLower.includes(token)) score += 0.2;
+                if (keywordsLower.includes(token)) score += 0.1;
             }
 
             return {
                 imageId: item.imageId,
-                fingerprint: item.fingerprint,
+                score: Math.min(roundScore(score), 1.0),
                 caption: item.caption,
                 keywords: item.keywords,
-                captionEngine: item.captionEngine,
-                score
+                captionEngine: item.captionEngine
             };
         });
 
         scored.sort((a, b) => b.score - a.score);
-        const results = scored.slice(0, limit);
+        const fallbackResults = scored.slice(0, requestedLimit);
 
         return res.status(200).json({
             query,
-            total: results.length,
-            results
+            total: fallbackResults.length,
+            results: fallbackResults,
+            engine: 'keyword-fallback'
         });
     } catch (err) {
         console.error('[GalleryController] Error searching metadata:', err);
         return res.status(500).json({ message: "Internal server error searching metadata" });
     }
 };
+
+function roundScore(val) {
+    return Math.round(val * 1000) / 1000;
+}
 
 /**
  * POST /api/gallery/ask

@@ -133,15 +133,16 @@ const reconcileRequestSchema = z.object({
 });
 
 /**
- * Strict schema for Phase 27 / 29 semantic / keyword search request:
- * { query: string, limit?: number, imageId?: string }
+ * Strict schema for Phase 27 / 29 / 34 semantic search request:
+ * { query: string, limit?: number, top_k?: number, imageId?: string }
  */
 const searchRequestSchema = z.object({
-    query: z.string().trim().min(1, { message: "Search query cannot be empty" }).max(200, { message: "Search query cannot exceed 200 characters" }),
+    query: z.string().trim().min(1, { message: "Search query cannot be empty" }).max(500, { message: "Search query cannot exceed 500 characters" }),
     limit: z.number().int().min(1).max(100).optional().default(30),
+    top_k: z.number().int().min(1).max(100).optional(),
     imageId: z.string().min(1).max(128).optional().nullable()
 }).strict({
-    message: "Unexpected field in search request. Only 'query', 'limit', and optional 'imageId' are permitted."
+    message: "Unexpected field in search request. Only 'query', 'limit', 'top_k', and optional 'imageId' are permitted."
 });
 
 /**

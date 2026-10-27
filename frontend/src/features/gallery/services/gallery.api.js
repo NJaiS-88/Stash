@@ -86,11 +86,26 @@ export async function reconcileCloudMetadata(records) {
 }
 
 /**
- * Phase 27: Semantic & keyword search across user's indexed photo captions
+ * Phase 27 & Phase 34: Semantic & vector search across user's indexed photo captions
  * POST /api/gallery/search
  */
 export async function searchCloudMetadata(query, limit = 50) {
-    const response = await galleryApi.post('/search', { query, limit });
+    const response = await galleryApi.post('/search', { query, limit, top_k: limit });
+    return response.data;
+}
+
+/**
+ * Phase 34: Natural Language Semantic Search via Pinecone
+ * POST /api/gallery/semantic-search
+ *
+ * query -> Zod -> Auth -> text embedding -> Pinecone -> user-scoped retrieval -> [ { imageId, score } ]
+ *
+ * @param {string} query Natural language query (e.g. "Show me beach photos at sunset")
+ * @param {number} [top_k=20] Max results to return
+ * @returns {Promise<{ query: string, total: number, results: Array<{ imageId: string, score: number }> }>}
+ */
+export async function semanticSearch(query, top_k = 20) {
+    const response = await galleryApi.post('/semantic-search', { query, limit: top_k, top_k });
     return response.data;
 }
 
