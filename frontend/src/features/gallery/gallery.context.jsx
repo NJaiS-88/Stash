@@ -2,6 +2,8 @@ import { createContext, useState, useEffect } from 'react';
 import { visionQueue } from './services/visionQueue';
 import { getAllFolders, resetStaleProcessingImages, getPendingImages } from './services/galleryDb';
 import { checkLocalAiHealth } from './services/localAiClient';
+import { cloudSyncManager } from './services/cloudSync';
+import { getPrivacyBoundaryAuditLog } from './services/privacyBoundary';
 
 const GalleryContext = createContext();
 
@@ -93,7 +95,9 @@ export const GalleryProvider = ({ children }) => {
             indexingState,
             pauseAI: () => visionQueue.pause(),
             resumeAI: () => visionQueue.resume(folders),
-            triggerAI: (targetFolders = null) => visionQueue.start(targetFolders || folders)
+            triggerAI: (targetFolders = null) => visionQueue.start(targetFolders || folders),
+            syncCloud: () => cloudSyncManager.syncPendingImagesToCloud(),
+            getPrivacyAuditLog: () => getPrivacyBoundaryAuditLog()
         }}>
             {children}
         </GalleryContext.Provider>

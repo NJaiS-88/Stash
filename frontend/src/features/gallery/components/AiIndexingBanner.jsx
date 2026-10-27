@@ -84,6 +84,20 @@ export default function AiIndexingBanner() {
                     }}>
                         Engine: {isLocal ? 'Private Local AI' : 'Browser AI'}
                     </span>
+                    <span style={{
+                        fontSize: '0.72rem',
+                        fontWeight: 600,
+                        padding: '2px 8px',
+                        borderRadius: '12px',
+                        backgroundColor: '#f1f5f9',
+                        color: '#334155',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        border: '1px solid #e2e8f0'
+                    }} title="Phase 25 Cloud Privacy Boundary Active: Zero image bytes, thumbnails, paths, or raw hashes ever leave your device.">
+                        🔒 Cloud Privacy Boundary Enforced
+                    </span>
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>

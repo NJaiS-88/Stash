@@ -1,5 +1,6 @@
 const express = require('express');
 const authRouter = require('./routes/auth.routes');
+const galleryRouter = require('./routes/gallery.routes');
 const cookieParser = require('cookie-parser');
 const cors = require('cors');
 
@@ -13,5 +14,6 @@ app.use(cors({
 app.use(express.json());
 app.use(cookieParser());
 app.use('/api/auth', authRouter);
+app.use('/api/gallery', galleryRouter);
 
 module.exports = app;

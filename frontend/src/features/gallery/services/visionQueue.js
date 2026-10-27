@@ -19,6 +19,7 @@ import {
 import { resolveFileByPath } from './fileSystem';
 import { computeFileHash } from './crypto';
 import { checkLocalAiHealth, requestLocalCaption } from './localAiClient';
+import { cloudSyncManager } from './cloudSync';
 
 class VisionQueueManager {
     constructor() {
@@ -411,6 +412,13 @@ class VisionQueueManager {
         this.status.currentFile = '';
         this.status.modelStatus = this.isPaused ? 'AI inference paused.' : 'AI indexing complete!';
         this.notify();
+
+        // Phase 25: Trigger background cloud synchronization under strict Privacy Boundary
+        if (!this.isPaused) {
+            cloudSyncManager.syncPendingImagesToCloud().catch(err => {
+                console.warn('[VisionQueue] Cloud sync background notification:', err?.message || err);
+            });
+        }
     }
 
     /**

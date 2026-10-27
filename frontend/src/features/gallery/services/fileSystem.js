@@ -234,3 +234,5 @@ export async function streamDirectoryFiles(dirHandle, onBatch, batchSize = 100, 
 export * from './crypto';
 export * from './reconciliation';
 export * from './scanner';
+export * from './privacyBoundary';
+export * from './cloudSync';

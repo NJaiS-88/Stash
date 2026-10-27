@@ -414,8 +414,8 @@ export async function purgeMissingImages() {
             }
             tx.oncomplete = () => resolve(missing.map(m => ({
                 imageId: m.imageId,
-                fingerprint: m.fingerprint,
-                fileName: m.fileName
+                fingerprint: m.fingerprint || null,
+                status: 'deleted'
             })));
             tx.onerror = () => reject(tx.error);
         });
