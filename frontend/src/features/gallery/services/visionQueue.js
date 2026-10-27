@@ -14,7 +14,8 @@ import {
     saveImageRecord,
     markBrowserCaptionsForUpgrade,
     getExistingCaptionByContentHash,
-    getQueueStats
+    getQueueStats,
+    getLocalOwnerId
 } from './galleryDb';
 import { resolveFileByPath } from './fileSystem';
 import { computeFileHash } from './crypto';
@@ -23,6 +24,7 @@ import { cloudSyncManager } from './cloudSync';
 
 class VisionQueueManager {
     constructor() {
+        this.ownerId = null;
         this.worker = null;
         this.isRunning = false;
         this.isPaused = false;
@@ -39,6 +41,49 @@ class VisionQueueManager {
             activeEngine: 'browser', // 'local' | 'browser'
             activeModel: 'Florence-2-base-ft'
         };
+    }
+
+    /**
+     * Set active user account for queue processing.
+     * Cancels immediately if user account changes.
+     */
+    setOwner(ownerId) {
+        const normalized = ownerId ? String(ownerId) : null;
+        if (this.ownerId !== normalized) {
+            console.log(`[VisionQueue] Account switched: ${this.ownerId || 'none'} -> ${normalized || 'none'}. Stopping previous queue.`);
+            this.stop();
+            this.ownerId = normalized;
+        }
+    }
+
+    /**
+     * Stop and cancel all running queue operations, terminating any web workers.
+     * Clears all in-memory task states immediately.
+     */
+    stop() {
+        this.isRunning = false;
+        this.isPaused = false;
+        this.currentTask = null;
+        this.activeResolve = null;
+
+        if (this.worker) {
+            try {
+                this.worker.terminate();
+            } catch {}
+            this.worker = null;
+        }
+
+        this.status = {
+            isIndexing: false,
+            isPaused: false,
+            current: 0,
+            total: 0,
+            currentFile: '',
+            modelStatus: 'Idle',
+            activeEngine: 'browser',
+            activeModel: 'Florence-2-base-ft'
+        };
+        this.notify();
     }
 
     /**
@@ -113,14 +158,21 @@ class VisionQueueManager {
      * Probes Local AI Helper first; defaults to Qwen3-VL-8B if healthy, falls back to Browser AI.
      * @param {Array} folders - Optional folder handles list
      */
-    async start(folders = null) {
+    async start(folders = null, targetOwnerId = null) {
+        const activeOwner = targetOwnerId || this.ownerId || getLocalOwnerId();
+        if (!activeOwner) {
+            console.warn('[VisionQueue] Refusing to start AI queue without active authenticated account.');
+            return;
+        }
+        this.ownerId = activeOwner;
+
         if (this.isRunning && !this.isPaused) return;
 
         this.isPaused = false;
         this.isRunning = true;
 
-        // Phase 21: Recover any interrupted jobs from previous sessions
-        await resetStaleProcessingImages({ forceAll: true });
+        // Phase 21 & 28: Recover any interrupted jobs strictly for this user
+        await resetStaleProcessingImages({ forceAll: true, ownerId: activeOwner });
 
         // Tier 1 Detection: Probe 127.0.0.1 Stash Local AI Helper
         const localHealth = await checkLocalAiHealth();
@@ -146,8 +198,8 @@ class VisionQueueManager {
         }
 
         const isLocalAvailable = this.status.activeEngine === 'local';
-        const stats = await getQueueStats();
-        const pendingList = await getPendingImages({ isLocalAiAvailable: isLocalAvailable });
+        const stats = await getQueueStats(activeOwner);
+        const pendingList = await getPendingImages({ isLocalAiAvailable: isLocalAvailable, ownerId: activeOwner });
 
         this.status.isIndexing = true;
         this.status.isPaused = false;
@@ -165,15 +217,18 @@ class VisionQueueManager {
             return;
         }
 
-        const activeFolders = folders || await getAllFolders();
+        const activeFolders = folders || await getAllFolders(activeOwner);
         const folderMap = new Map(activeFolders.map(f => [f.id, f]));
 
         let processedCount = 0;
 
-        while (this.isRunning && !this.isPaused) {
+        while (this.isRunning && !this.isPaused && this.ownerId === activeOwner) {
             let img = null;
             try {
-                img = await claimNextPendingImage({ isLocalAiAvailable: this.status.activeEngine === 'local' });
+                img = await claimNextPendingImage({
+                    isLocalAiAvailable: this.status.activeEngine === 'local',
+                    ownerId: activeOwner
+                });
             } catch (claimErr) {
                 console.warn('[VisionQueue] Error claiming pending image:', claimErr);
                 break;
@@ -187,7 +242,7 @@ class VisionQueueManager {
 
             let folder = folderMap.get(img.folderId);
             if (!folder?.handle) {
-                const refreshedFolders = await getAllFolders();
+                const refreshedFolders = await getAllFolders(activeOwner);
                 for (const f of refreshedFolders) {
                     folderMap.set(f.id, f);
                 }
@@ -263,7 +318,7 @@ class VisionQueueManager {
 
                 // If this image shares the same SHA-256 hash as an already-captioned image, reuse it in 0ms!
                 if (img.contentHash) {
-                    const existingMatch = await getExistingCaptionByContentHash(img.contentHash);
+                    const existingMatch = await getExistingCaptionByContentHash(img.contentHash, activeOwner);
                     if (existingMatch && existingMatch.caption && existingMatch.imageId !== img.imageId) {
                         console.log(`[VisionQueue] ⚡ Instant Hash Reuse for ${img.fileName}: Reusing existing caption from ${existingMatch.fileName}`);
                         result = {

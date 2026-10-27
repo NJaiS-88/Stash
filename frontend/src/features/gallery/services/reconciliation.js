@@ -1,4 +1,5 @@
 import { computeFileHash, computeFingerprint } from './crypto';
+import { getLocalOwnerId } from './galleryDb';
 
 /**
  * Phase 21: Resolves safe caption status.
@@ -41,6 +42,7 @@ export async function createImageRecord(fileItem, folderId, existingRecord = nul
             : (contentHash ? await computeFingerprint(contentHash) : null);
 
         return {
+            localOwnerId: existingRecord?.localOwnerId || getLocalOwnerId(),
             imageId: existingRecord?.imageId || crypto.randomUUID(),
             folderId,
             relativePath: fileItem.path,

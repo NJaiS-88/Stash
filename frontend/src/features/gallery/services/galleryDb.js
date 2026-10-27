@@ -1,7 +1,38 @@
 const DB_NAME = 'stash_db';
-const DB_VERSION = 9;
+const DB_VERSION = 10;
 const FOLDERS_STORE = 'folders';
 const IMAGES_STORE = 'images';
+
+// In-memory & session-synced active local user identifier
+let currentLocalOwnerId = typeof sessionStorage !== 'undefined'
+    ? sessionStorage.getItem('stash_local_owner_id')
+    : null;
+
+/**
+ * Sets the active localOwnerId for all IndexedDB operations.
+ * Called automatically on login and cleared on logout.
+ *
+ * @param {string|null} ownerId - Opaque account identifier (e.g. user._id)
+ */
+export function setLocalOwnerId(ownerId) {
+    currentLocalOwnerId = ownerId ? String(ownerId) : null;
+    if (typeof sessionStorage !== 'undefined') {
+        if (currentLocalOwnerId) {
+            sessionStorage.setItem('stash_local_owner_id', currentLocalOwnerId);
+        } else {
+            sessionStorage.removeItem('stash_local_owner_id');
+        }
+    }
+    console.log(`[GalleryDB] Local account scope active: ${currentLocalOwnerId || 'none (logged out)'}`);
+}
+
+/**
+ * Returns the currently authenticated localOwnerId.
+ * @returns {string|null}
+ */
+export function getLocalOwnerId() {
+    return currentLocalOwnerId;
+}
 
 function getDB() {
     return new Promise((resolve, reject) => {
@@ -9,8 +40,14 @@ function getDB() {
         request.onupgradeneeded = (e) => {
             const db = request.result;
 
+            let foldersStore;
             if (!db.objectStoreNames.contains(FOLDERS_STORE)) {
-                db.createObjectStore(FOLDERS_STORE);
+                foldersStore = db.createObjectStore(FOLDERS_STORE);
+            } else {
+                foldersStore = request.transaction.objectStore(FOLDERS_STORE);
+            }
+            if (!foldersStore.indexNames.contains('localOwnerId')) {
+                foldersStore.createIndex('localOwnerId', 'localOwnerId', { unique: false });
             }
 
             let imageStore;
@@ -26,28 +63,37 @@ function getDB() {
             if (!imageStore.indexNames.contains('folder_path')) {
                 imageStore.createIndex('folder_path', ['folderId', 'relativePath'], { unique: true });
             }
-            // Phase 5: Index on SHA-256 contentHash for instant duplicate detection & rename resolution
             if (!imageStore.indexNames.contains('contentHash')) {
                 imageStore.createIndex('contentHash', 'contentHash', { unique: false });
             }
-            // Phase 7: Index on user-specific HMAC fingerprint for cloud reconciliation
             if (!imageStore.indexNames.contains('fingerprint')) {
                 imageStore.createIndex('fingerprint', 'fingerprint', { unique: false });
             }
-            // Phase 9: Index on status ('available' vs 'missing')
             if (!imageStore.indexNames.contains('status')) {
                 imageStore.createIndex('status', 'status', { unique: false });
             }
-            // Two-Tier State Machine Indexes: decoupled local captioning & cloud vector sync
             if (!imageStore.indexNames.contains('captionStatus')) {
                 imageStore.createIndex('captionStatus', 'captionStatus', { unique: false });
             }
             if (!imageStore.indexNames.contains('cloudIndexStatus')) {
                 imageStore.createIndex('cloudIndexStatus', 'cloudIndexStatus', { unique: false });
             }
-            // Phase 15: Index on queuePriority for persistent prioritized AI scheduling
             if (!imageStore.indexNames.contains('queuePriority')) {
                 imageStore.createIndex('queuePriority', 'queuePriority', { unique: false });
+            }
+
+            // User-scoped indexes: isolate local data per authenticated account
+            if (!imageStore.indexNames.contains('localOwnerId')) {
+                imageStore.createIndex('localOwnerId', 'localOwnerId', { unique: false });
+            }
+            if (!imageStore.indexNames.contains('owner_folder')) {
+                imageStore.createIndex('owner_folder', ['localOwnerId', 'folderId'], { unique: false });
+            }
+            if (!imageStore.indexNames.contains('owner_captionStatus')) {
+                imageStore.createIndex('owner_captionStatus', ['localOwnerId', 'captionStatus'], { unique: false });
+            }
+            if (!imageStore.indexNames.contains('owner_status')) {
+                imageStore.createIndex('owner_status', ['localOwnerId', 'status'], { unique: false });
             }
         };
         request.onsuccess = () => resolve(request.result);
@@ -55,14 +101,25 @@ function getDB() {
     });
 }
 
-// ----------------- FOLDERS STORE -----------------
+// ----------------- FOLDERS STORE (User-Scoped) -----------------
 
 export async function saveFolder(folder) {
     try {
+        const ownerId = folder.localOwnerId || getLocalOwnerId();
+        if (!ownerId) {
+            console.warn('[GalleryDB] Refusing to save folder without active localOwnerId');
+            return false;
+        }
+
+        const scopedFolder = {
+            ...folder,
+            localOwnerId: ownerId
+        };
+
         const db = await getDB();
         return new Promise((resolve, reject) => {
             const tx = db.transaction(FOLDERS_STORE, 'readwrite');
-            const req = tx.objectStore(FOLDERS_STORE).put(folder, folder.id);
+            const req = tx.objectStore(FOLDERS_STORE).put(scopedFolder, scopedFolder.id);
             req.onsuccess = () => resolve(true);
             req.onerror = () => reject(req.error);
         });
@@ -72,14 +129,26 @@ export async function saveFolder(folder) {
     }
 }
 
-export async function getAllFolders() {
+export async function getAllFolders(ownerId = getLocalOwnerId()) {
+    if (!ownerId) return [];
     try {
         const db = await getDB();
         return new Promise((resolve, reject) => {
             const tx = db.transaction(FOLDERS_STORE, 'readonly');
-            const req = tx.objectStore(FOLDERS_STORE).getAll();
-            req.onsuccess = () => resolve(req.result || []);
-            req.onerror = () => reject(req.error);
+            const store = tx.objectStore(FOLDERS_STORE);
+
+            if (store.indexNames.contains('localOwnerId')) {
+                const req = store.index('localOwnerId').getAll(ownerId);
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            } else {
+                const req = store.getAll();
+                req.onsuccess = () => {
+                    const all = req.result || [];
+                    resolve(all.filter(f => f.localOwnerId === ownerId || !f.localOwnerId));
+                };
+                req.onerror = () => reject(req.error);
+            }
         });
     } catch (error) {
         console.error('Error getting all folders:', error);
@@ -102,17 +171,23 @@ export async function deleteFolder(folderId) {
     }
 }
 
-// ----------------- IMAGES REGISTRY STORE -----------------
+// ----------------- IMAGES REGISTRY STORE (User-Scoped) -----------------
 
 export async function saveImageRecord(record) {
     if (!record) return false;
+    const ownerId = record.localOwnerId || getLocalOwnerId();
+    if (!ownerId) {
+        console.warn('[GalleryDB] Refusing to save image record without active localOwnerId');
+        return false;
+    }
+
     try {
         const db = await getDB();
         return new Promise((resolve, reject) => {
             const tx = db.transaction(IMAGES_STORE, 'readwrite');
-            // Phase 14: Normalize decoupled image processing state
             const normalized = {
                 ...record,
+                localOwnerId: ownerId,
                 captionStatus: record.captionStatus || (record.caption ? 'completed' : 'pending'),
                 cloudIndexStatus: record.cloudIndexStatus || (record.embedding ? 'completed' : 'pending'),
                 caption: record.caption || null,
@@ -137,15 +212,20 @@ export async function saveImageRecord(record) {
 
 export async function saveImageRecords(records) {
     if (!records || records.length === 0) return true;
+    const defaultOwnerId = getLocalOwnerId();
+
     try {
         const db = await getDB();
         return new Promise((resolve, reject) => {
             const tx = db.transaction(IMAGES_STORE, 'readwrite');
             const store = tx.objectStore(IMAGES_STORE);
             for (const record of records) {
-                // Phase 14 & 15: Normalize decoupled two-stage image processing state with priority
+                const ownerId = record.localOwnerId || defaultOwnerId;
+                if (!ownerId) continue;
+
                 const normalized = {
                     ...record,
+                    localOwnerId: ownerId,
                     captionStatus: record.captionStatus || (record.caption ? 'completed' : 'pending'),
                     cloudIndexStatus: record.cloudIndexStatus || (record.embedding ? 'completed' : 'pending'),
                     caption: record.caption || null,
@@ -172,15 +252,27 @@ export async function saveImageRecords(records) {
     }
 }
 
-export async function getImagesByFolder(folderId) {
+export async function getImagesByFolder(folderId, ownerId = getLocalOwnerId()) {
+    if (!folderId || !ownerId) return [];
     try {
         const db = await getDB();
         return new Promise((resolve, reject) => {
             const tx = db.transaction(IMAGES_STORE, 'readonly');
-            const index = tx.objectStore(IMAGES_STORE).index('folderId');
-            const req = index.getAll(folderId);
-            req.onsuccess = () => resolve(req.result || []);
-            req.onerror = () => reject(req.error);
+            const store = tx.objectStore(IMAGES_STORE);
+
+            if (store.indexNames.contains('owner_folder')) {
+                const req = store.index('owner_folder').getAll([ownerId, folderId]);
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            } else {
+                const index = store.index('folderId');
+                const req = index.getAll(folderId);
+                req.onsuccess = () => {
+                    const all = req.result || [];
+                    resolve(all.filter(img => img.localOwnerId === ownerId || !img.localOwnerId));
+                };
+                req.onerror = () => reject(req.error);
+            }
         });
     } catch (error) {
         console.error('Error getting images by folder:', error);
@@ -188,14 +280,26 @@ export async function getImagesByFolder(folderId) {
     }
 }
 
-export async function getAllImages() {
+export async function getAllImages(ownerId = getLocalOwnerId()) {
+    if (!ownerId) return [];
     try {
         const db = await getDB();
         return new Promise((resolve, reject) => {
             const tx = db.transaction(IMAGES_STORE, 'readonly');
-            const req = tx.objectStore(IMAGES_STORE).getAll();
-            req.onsuccess = () => resolve(req.result || []);
-            req.onerror = () => reject(req.error);
+            const store = tx.objectStore(IMAGES_STORE);
+
+            if (store.indexNames.contains('localOwnerId')) {
+                const req = store.index('localOwnerId').getAll(ownerId);
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            } else {
+                const req = store.getAll();
+                req.onsuccess = () => {
+                    const all = req.result || [];
+                    resolve(all.filter(img => img.localOwnerId === ownerId || !img.localOwnerId));
+                };
+                req.onerror = () => reject(req.error);
+            }
         });
     } catch (error) {
         console.error('Error getting all images:', error);
@@ -203,10 +307,10 @@ export async function getAllImages() {
     }
 }
 
-export async function deleteImagesByFolder(folderId) {
+export async function deleteImagesByFolder(folderId, ownerId = getLocalOwnerId()) {
     try {
         const db = await getDB();
-        const records = await getImagesByFolder(folderId);
+        const records = await getImagesByFolder(folderId, ownerId);
         if (records.length === 0) return true;
 
         return new Promise((resolve, reject) => {
@@ -292,8 +396,8 @@ export async function findDuplicateImages() {
  * @param {string} contentHash - SHA-256 hash string
  * @returns {Promise<Object|null>} Existing image record with caption, or null
  */
-export async function getExistingCaptionByContentHash(contentHash) {
-    if (!contentHash) return null;
+export async function getExistingCaptionByContentHash(contentHash, ownerId = getLocalOwnerId()) {
+    if (!contentHash || !ownerId) return null;
     try {
         const db = await getDB();
         return new Promise((resolve, reject) => {
@@ -303,7 +407,12 @@ export async function getExistingCaptionByContentHash(contentHash) {
             const req = index.getAll(contentHash);
             req.onsuccess = () => {
                 const results = req.result || [];
-                const match = results.find(img => img.caption && typeof img.caption === 'string' && img.caption.trim().length > 0);
+                const match = results.find(img =>
+                    img.localOwnerId === ownerId &&
+                    img.caption &&
+                    typeof img.caption === 'string' &&
+                    img.caption.trim().length > 0
+                );
                 resolve(match || null);
             };
             req.onerror = () => reject(req.error);
@@ -321,15 +430,26 @@ export async function getExistingCaptionByContentHash(contentHash) {
  * @param {'available'|'missing'} status
  * @returns {Promise<Array>}
  */
-export async function getImagesByStatus(status) {
+export async function getImagesByStatus(status, ownerId = getLocalOwnerId()) {
+    if (!ownerId) return [];
     try {
         const db = await getDB();
         return new Promise((resolve, reject) => {
             const tx = db.transaction(IMAGES_STORE, 'readonly');
-            const index = tx.objectStore(IMAGES_STORE).index('status');
-            const req = index.getAll(status);
-            req.onsuccess = () => resolve(req.result || []);
-            req.onerror = () => reject(req.error);
+            const store = tx.objectStore(IMAGES_STORE);
+            if (store.indexNames.contains('owner_status')) {
+                const req = store.index('owner_status').getAll([ownerId, status]);
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            } else {
+                const index = store.index('status');
+                const req = index.getAll(status);
+                req.onsuccess = () => {
+                    const all = req.result || [];
+                    resolve(all.filter(img => img.localOwnerId === ownerId || !img.localOwnerId));
+                };
+                req.onerror = () => reject(req.error);
+            }
         });
     } catch (error) {
         console.error('Error getting images by status:', error);
@@ -342,32 +462,39 @@ export async function getImagesByStatus(status) {
  *
  * @returns {Promise<Array>}
  */
-export async function getMissingImages() {
-    return getImagesByStatus('missing');
-}
-
-/**
- * Returns all currently available image records.
- *
- * @returns {Promise<Array>}
- */
-export async function getAvailableImages() {
+export async function getMissingImages(ownerId = getLocalOwnerId()) {
     try {
-        const all = await getAllImages();
-        return all.filter(img => img && img.status !== 'missing');
+        const all = await getAllImages(ownerId);
+        return all.filter(img => img && img.status === 'missing');
     } catch {
-        return getImagesByStatus('available');
+        return [];
     }
 }
 
 /**
- * Phase 10: Returns only active available images for a specific folder, isolating missing files.
+ * Returns all currently available image records scoped to the authenticated user.
  *
- * @param {string} folderId
+ * @param {string} [ownerId]
  * @returns {Promise<Array>}
  */
-export async function getAvailableImagesByFolder(folderId) {
-    const images = await getImagesByFolder(folderId);
+export async function getAvailableImages(ownerId = getLocalOwnerId()) {
+    try {
+        const all = await getAllImages(ownerId);
+        return all.filter(img => img && img.status !== 'missing');
+    } catch {
+        return [];
+    }
+}
+
+/**
+ * Returns active available images for a specific folder and user.
+ *
+ * @param {string} folderId
+ * @param {string} [ownerId]
+ * @returns {Promise<Array>}
+ */
+export async function getAvailableImagesByFolder(folderId, ownerId = getLocalOwnerId()) {
+    const images = await getImagesByFolder(folderId, ownerId);
     return images.filter(img => img.status === 'available');
 }
 
@@ -400,10 +527,10 @@ export async function deleteImagePermanently(imageId) {
  *
  * @returns {Promise<Array<{ imageId: string, fingerprint: string|null, fileName: string }>>}
  */
-export async function purgeMissingImages() {
+export async function purgeMissingImages(ownerId = getLocalOwnerId()) {
     try {
         const db = await getDB();
-        const missing = await getMissingImages();
+        const missing = await getMissingImages(ownerId);
         if (missing.length === 0) return [];
 
         return new Promise((resolve, reject) => {
@@ -427,13 +554,16 @@ export async function purgeMissingImages() {
 
 /**
  * Returns all available images with captionStatus === 'pending'
- * that require visual AI inference (via Local Qwen or Browser fallback).
+ * that require visual AI inference, scoped to the authenticated user.
  *
+ * @param {Object} [options]
+ * @param {boolean} [options.isLocalAiAvailable=false]
+ * @param {string} [options.ownerId]
  * @returns {Promise<Array>}
  */
-export async function getPendingImages({ isLocalAiAvailable = false } = {}) {
+export async function getPendingImages({ isLocalAiAvailable = false, ownerId = getLocalOwnerId() } = {}) {
     try {
-        const available = await getAvailableImages();
+        const available = await getAvailableImages(ownerId);
         return available.filter(img => {
             if (img.status === 'missing') return false;
             const hasCaption = Boolean(img.caption && typeof img.caption === 'string' && img.caption.trim().length > 0);
@@ -459,13 +589,14 @@ export async function getPendingImages({ isLocalAiAvailable = false } = {}) {
 
 /**
  * Returns images where local AI captioning is completed, but cloud vector indexing
- * is still pending or failed. Allows cloud sync retry without re-running expensive AI.
+ * is still pending or failed, scoped to the authenticated user.
  *
+ * @param {string} [ownerId]
  * @returns {Promise<Array>}
  */
-export async function getPendingCloudIndexImages() {
+export async function getPendingCloudIndexImages(ownerId = getLocalOwnerId()) {
     try {
-        const available = await getAvailableImages();
+        const available = await getAvailableImages(ownerId);
         return available.filter(img =>
             img.status === 'available' &&
             img.captionStatus === 'completed' &&
@@ -730,16 +861,19 @@ export async function getImagesPaged(folderId = null, offset = 0, limit = 60) {
  * @param {boolean} [optionsOrMaxAge.forceAll=false] - Reset all processing records on startup
  * @returns {Promise<number>} Count of recovered records
  */
-export async function resetStaleProcessingImages(optionsOrMaxAge = 300000) {
+export async function resetStaleProcessingImages(optionsOrMaxAge = 300000, ownerId = getLocalOwnerId()) {
     let maxAgeMs = 300000;
     let forceAll = false;
 
     if (typeof optionsOrMaxAge === 'object' && optionsOrMaxAge !== null) {
         maxAgeMs = optionsOrMaxAge.maxAgeMs ?? 300000;
         forceAll = Boolean(optionsOrMaxAge.forceAll);
+        if (optionsOrMaxAge.ownerId) ownerId = optionsOrMaxAge.ownerId;
     } else if (typeof optionsOrMaxAge === 'number') {
         maxAgeMs = optionsOrMaxAge;
     }
+
+    if (!ownerId) return 0;
 
     try {
         const db = await getDB();
@@ -762,6 +896,12 @@ export async function resetStaleProcessingImages(optionsOrMaxAge = 300000) {
 
                 const record = cursor.value;
 
+                // Isolate strictly by authenticated user
+                if (record.localOwnerId && record.localOwnerId !== ownerId) {
+                    cursor.continue();
+                    return;
+                }
+
                 // Completed images (A100, A101) must NEVER be reprocessed or reset:
                 if (record.captionStatus === 'completed' || Boolean(record.caption && record.caption.trim())) {
                     cursor.continue();
@@ -774,6 +914,7 @@ export async function resetStaleProcessingImages(optionsOrMaxAge = 300000) {
                 const isStale = forceAll || isFailed || (now - started > maxAgeMs);
 
                 if (isProcessing || (forceAll && isFailed) || isStale) {
+                    record.localOwnerId = record.localOwnerId || ownerId;
                     record.captionStatus = 'pending';
                     record.indexingStatus = 'pending';
                     record.processingStartedAt = null;
@@ -796,24 +937,15 @@ export async function resetStaleProcessingImages(optionsOrMaxAge = 300000) {
 }
 
 /**
- * Atomically claims the next pending image for local or browser AI processing.
+ * Phase 15 & 28: Atomically claims the next image from IndexedDB strictly scoped to
+ * the authenticated account (localOwnerId) and following 5-Tier Queue Priority:
  *
+ * @param {Object} options - { isLocalAiAvailable: boolean, ownerId?: string }
  * @returns {Promise<Object|null>}
  */
-/**
- * Phase 15: Atomically claims the next image from IndexedDB strictly following
- * the 5-Tier Queue Priority with Concurrency = 1:
- *
- * Priority 1: New images (queuePriority === 1)
- * Priority 2: Modified images (queuePriority === 2)
- * Priority 3: Never-captioned images (captionStatus === 'pending', no caption)
- * Priority 4: Failed/retryable jobs (captionStatus === 'failed', retryCount < 3, 30s backoff)
- * Priority 5: Old browser captions eligible for Local AI upgrade (only if isLocalAiAvailable)
- *
- * @param {Object} options - { isLocalAiAvailable: boolean }
- * @returns {Promise<Object|null>}
- */
-export async function claimNextPendingImage({ isLocalAiAvailable = false } = {}) {
+export async function claimNextPendingImage({ isLocalAiAvailable = false, ownerId = getLocalOwnerId() } = {}) {
+    if (!ownerId) return null;
+
     try {
         const db = await getDB();
         return new Promise((resolve) => {
@@ -841,6 +973,13 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
                 }
 
                 const rec = cursor.value;
+
+                // Account isolation check: never claim another account's photos
+                if (rec.localOwnerId && rec.localOwnerId !== ownerId) {
+                    cursor.continue();
+                    return;
+                }
+
                 if (rec && rec.status !== 'missing') {
                     const hasCaption = Boolean(rec.caption && typeof rec.caption === 'string' && rec.caption.trim().length > 0);
 
@@ -853,13 +992,13 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
                     );
 
                     // Uncaptioned photos need captioning!
-                    // Claim if never captioned or if stale processing (> 30s)
                     const isPending = !hasCaption && (
                         rec.captionStatus !== 'processing' ||
                         (now - (rec.processingStartedAt || 0) > 30000)
                     );
 
                     if (isPending || isEligibleUpgrade) {
+                        rec.localOwnerId = rec.localOwnerId || ownerId;
                         rec.captionStatus = 'processing';
                         rec.indexingStatus = 'processing';
                         rec.processingStartedAt = now;
@@ -886,9 +1025,9 @@ export async function claimNextPendingImage({ isLocalAiAvailable = false } = {})
  *
  * @returns {Promise<Object>}
  */
-export async function getQueueStats() {
+export async function getQueueStats(ownerId = getLocalOwnerId()) {
     try {
-        const all = await getAllImages();
+        const all = await getAllImages(ownerId);
         const available = all.filter(img => img.status === 'available');
         return {
             total: available.length,

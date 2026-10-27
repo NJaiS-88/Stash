@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { getFileFromHandle, resolveFileByPath } from '../services/fileSystem';
+import { createTrackedBlobUrl, revokeTrackedBlobUrl } from '../services/blobRegistry';
 
 function countTreeFiles(dir) {
     if (!dir || !dir.children) return 0;
@@ -177,7 +178,7 @@ function ThumbnailCard({ record, fileItem, rootHandle }) {
         return () => {
             observer.disconnect();
             if (activeUrlRef.current) {
-                URL.revokeObjectURL(activeUrlRef.current);
+                revokeTrackedBlobUrl(activeUrlRef.current);
                 activeUrlRef.current = null;
             }
         };
@@ -201,10 +202,10 @@ function ThumbnailCard({ record, fileItem, rootHandle }) {
 
                     // Revoke old URL if any
                     if (activeUrlRef.current) {
-                        URL.revokeObjectURL(activeUrlRef.current);
+                        revokeTrackedBlobUrl(activeUrlRef.current);
                     }
 
-                    const createdUrl = URL.createObjectURL(file);
+                    const createdUrl = createTrackedBlobUrl(file);
                     activeUrlRef.current = createdUrl;
                     setImgUrl(createdUrl);
                 } catch (err) {
@@ -216,7 +217,7 @@ function ThumbnailCard({ record, fileItem, rootHandle }) {
         } else {
             // Off-screen: revoke Blob URL immediately to free memory
             if (activeUrlRef.current) {
-                URL.revokeObjectURL(activeUrlRef.current);
+                revokeTrackedBlobUrl(activeUrlRef.current);
                 activeUrlRef.current = null;
                 setImgUrl(null);
             }

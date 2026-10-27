@@ -1,6 +1,9 @@
 import { useContext } from 'react';
 import AuthContext from '../auth.context';
 import { loginUser, registerUser, logoutUser, getUser } from '../services/auth.api';
+import { visionQueue } from '../../gallery/services/visionQueue';
+import { revokeAllBlobUrls } from '../../gallery/services/blobRegistry';
+import { setLocalOwnerId } from '../../gallery/services/galleryDb';
 
 export const useAuth = () => {
     const context = useContext(AuthContext);
@@ -28,6 +31,11 @@ export const useAuth = () => {
         setLoading(true);
         setErrorMessage(null);
         try {
+            // Immediate in-memory state purge: cancel AI queue, revoke all Blob URLs, unset local owner
+            visionQueue.stop();
+            revokeAllBlobUrls();
+            setLocalOwnerId(null);
+
             await logoutUser();
             setUser(null);
         } catch (error) {

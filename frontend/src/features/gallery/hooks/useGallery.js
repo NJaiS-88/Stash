@@ -16,7 +16,8 @@ import {
     purgeMissingImages,
     getPendingImages,
     updateImageAI,
-    resetStaleProcessingImages
+    resetStaleProcessingImages,
+    getLocalOwnerId
 } from '../services/galleryDb';
 
 export const useGallery = () => {
@@ -127,6 +128,7 @@ export const useGallery = () => {
             console.log('Connected folder handle:', handle);
 
             const folderItem = {
+                localOwnerId: getLocalOwnerId(),
                 id: crypto.randomUUID(),
                 name: handle.name,
                 handle,
@@ -369,44 +371,15 @@ export const useGallery = () => {
     };
 
     /**
-     * Restore saved folders on startup.
-     * The background AI daemon is already automatically booted by GalleryProvider.
+     * Missing image reconciliation helper
      */
     useEffect(() => {
-        const restoreAllFolders = async () => {
-            try {
-                const saved = await getAllFolders();
-                if (!saved || saved.length === 0) return;
-
-                setFolders(saved);
-
-                // Auto-activate the first folder if none active
-                if (!activeFolder && saved.length > 0) {
-                    const first = saved[0];
-                    try {
-                        const perm = await first.handle.queryPermission({ mode: 'read' });
-                        if (perm === 'granted') {
-                            const folderRecords = await getImagesByFolder(first.id);
-                            setActiveFolder({
-                                ...first,
-                                entries: [],
-                                flatFiles: [],
-                                imageRecords: folderRecords.filter(r => r.status === 'available')
-                            });
-                        }
-                    } catch (pErr) {
-                        console.warn('Could not query permission on startup:', pErr);
-                    }
-                }
-
-                await refreshMissingImages();
-            } catch (err) {
-                console.warn('Could not restore saved folders on boot:', err);
-            }
-        };
-
-        restoreAllFolders();
-    }, []);
+        if (folders.length > 0) {
+            refreshMissingImages();
+        } else {
+            setMissingImages([]);
+        }
+    }, [folders.length]);
 
     const runAIIndexing = async () => {
         if (triggerAI) {
