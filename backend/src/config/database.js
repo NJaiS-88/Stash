@@ -1,15 +1,19 @@
 const mongoose = require('mongoose');
 
 async function connectDB() {
-    const uri = process.env.MONGODB_URI;
-    if (!uri) {
+    let rawUri = process.env.MONGODB_URI;
+    if (!rawUri) {
         console.error('[Database] CRITICAL: MONGODB_URI environment variable is missing or undefined!');
         return;
     }
 
+    // Strip accidental surrounding quotes or whitespace from environment variable
+    let uri = rawUri.replace(/^["']|["']$/g, '').trim();
+
     try {
         await mongoose.connect(uri, {
             serverSelectionTimeoutMS: 5000,
+            family: 4, // Force IPv4 to avoid cloud IPv6 routing handshake delays
         });
         console.log('[Database] Successfully connected to MongoDB');
     } catch (error) {
