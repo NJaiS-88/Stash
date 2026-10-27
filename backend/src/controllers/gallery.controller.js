@@ -12,6 +12,22 @@
 const Metadata = require('../models/metadata.model');
 
 /**
+ * Phase 31 — Constructs unified retrieval text for embedding and RAG.
+ * Text embedding only under the privacy architecture.
+ *
+ * Example:
+ * Three people standing on a sandy beach beside the ocean...
+ * Keywords: people, beach, ocean, sunset, waves
+ */
+const constructRetrievalText = (caption, keywords = []) => {
+    const cleanCaption = (caption || '').trim();
+    if (!keywords || !Array.isArray(keywords) || keywords.length === 0) return cleanCaption;
+    const cleanKws = keywords.filter(k => k && typeof k === 'string' && k.trim());
+    if (cleanKws.length === 0) return cleanCaption;
+    return `${cleanCaption}\nKeywords: ${cleanKws.join(', ')}`;
+};
+
+/**
  * GET /api/gallery/images/:imageId
  * Phase 29: Read a single image metadata record.
  * Query MUST pair: { imageId, userId: req.user.id }. Never { imageId } alone.
@@ -111,6 +127,7 @@ const createImageMetadata = async (req, res) => {
             fingerprint: item.fingerprint,
             caption: item.caption,
             keywords: Array.isArray(item.keywords) ? item.keywords : [],
+            retrievalText: item.retrievalText || constructRetrievalText(item.caption, item.keywords),
             status: item.status || 'available',
             captionModel: item.captionModel || null,
             captionVersion: item.captionVersion || 1,
@@ -475,6 +492,42 @@ const askMetadata = async (req, res) => {
             });
         }
 
+        // Phase 31: Delegate to FastAPI LangChain + Gemini Flash 2.5 RAG service when active
+        const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000';
+        try {
+            const ragPayload = {
+                question,
+                userId: String(userId),
+                images: candidates.map(c => ({
+                    imageId: c.imageId,
+                    caption: c.caption,
+                    keywords: c.keywords || [],
+                    retrievalText: c.retrievalText || constructRetrievalText(c.caption, c.keywords)
+                })),
+                top_k: 5
+            };
+
+            const ragResponse = await fetch(`${RAG_SERVICE_URL}/rag/ask`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(ragPayload),
+                signal: AbortSignal.timeout(12000)
+            });
+
+            if (ragResponse.ok) {
+                const ragData = await ragResponse.json();
+                return res.status(200).json({
+                    question: ragData.question,
+                    answer: ragData.answer,
+                    model: ragData.model || 'gemini-2.5-flash',
+                    engine: 'langchain-fastapi',
+                    referencedImages: ragData.referencedImages
+                });
+            }
+        } catch (ragErr) {
+            console.log('[GalleryController] Notice: FastAPI RAG service unavailable, using local retrieval fallback:', ragErr.message);
+        }
+
         // Score relevant photo captions against question
         const matched = candidates.map(c => {
             let matches = 0;
@@ -533,6 +586,7 @@ const syncMetadata = async (req, res) => {
                 fingerprint: item.fingerprint,
                 caption: item.caption,
                 keywords: Array.isArray(item.keywords) ? item.keywords : [],
+                retrievalText: item.retrievalText || constructRetrievalText(item.caption, item.keywords),
                 status: item.status,
                 captionModel: item.captionModel || null,
                 captionVersion: item.captionVersion,

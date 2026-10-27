@@ -65,7 +65,12 @@ const metadataSchema = new mongoose.Schema({
     keywords: [{
         type: String,
         trim: true
-    }]
+    }],
+    retrievalText: {
+        type: String,
+        trim: true,
+        default: null
+    }
 }, {
     timestamps: true,
     strict: true // Strict schema rejection of unexpected fields

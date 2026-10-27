@@ -39,7 +39,8 @@ export const ALLOWED_CLOUD_FIELDS = Object.freeze(new Set([
     'status',
     'captionModel',
     'captionVersion',
-    'captionEngine'
+    'captionEngine',
+    'retrievalText'
 ]));
 
 /**
@@ -66,7 +67,8 @@ export const imageMetadataSchema = z.object({
     status: z.enum(['available', 'missing', 'deleted']).default('available'),
     captionModel: z.string().trim().min(1).max(100).optional().nullable().default(null),
     captionVersion: z.number().int().positive().optional().default(1),
-    captionEngine: z.enum(['local', 'browser']).optional().default('local')
+    captionEngine: z.enum(['local', 'browser']).optional().default('local'),
+    retrievalText: z.string().trim().max(2000).optional().nullable()
 }).strict({
     message: "Unexpected field detected in cloud payload. Binary data and local filesystem metadata are strictly forbidden."
 });
@@ -272,7 +274,10 @@ export function enforcePrivacyBoundary(record, { strict = true } = {}) {
             : (typeof record.version === 'number' ? record.version : 1),
         captionEngine: ['local', 'browser'].includes(record.captionEngine)
             ? record.captionEngine
-            : (['local', 'browser'].includes(record.engine) ? record.engine : 'local')
+            : (['local', 'browser'].includes(record.engine) ? record.engine : 'local'),
+        retrievalText: typeof record.retrievalText === 'string'
+            ? record.retrievalText.trim().slice(0, 2000)
+            : null
     };
 
     // Deep validation of sanitized object

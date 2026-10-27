@@ -51,7 +51,8 @@ const imageMetadataSchema = z.object({
     captionVersion: z.number().int().positive().optional().default(1),
     captionEngine: z.enum(['local', 'browser'], {
         errorMap: () => ({ message: "captionEngine must be 'local' or 'browser'" })
-    }).optional().default('local')
+    }).optional().default('local'),
+    retrievalText: z.string().trim().max(2000).optional().nullable().default(null)
 }).strict({
     message: "Unexpected field detected. Binary image data, paths, and raw hashes are strictly forbidden."
 });
