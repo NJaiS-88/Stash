@@ -43,14 +43,16 @@ const createImageMetadata = async (req, res) => {
         return res.status(201).json({
             message: "Image metadata saved successfully",
             image: {
+                userId: record.userId,
                 imageId: record.imageId,
                 fingerprint: record.fingerprint,
                 caption: record.caption,
-                keywords: record.keywords,
-                status: record.status,
+                captionEngine: record.captionEngine,
                 captionModel: record.captionModel,
                 captionVersion: record.captionVersion,
-                captionEngine: record.captionEngine
+                status: record.status,
+                createdAt: record.createdAt,
+                updatedAt: record.updatedAt
             }
         });
     } catch (err) {
@@ -89,11 +91,15 @@ const updateImageMetadata = async (req, res) => {
         return res.status(200).json({
             message: "Image metadata updated successfully",
             image: {
+                userId: record.userId,
                 imageId: record.imageId,
                 fingerprint: record.fingerprint,
                 caption: record.caption,
-                keywords: record.keywords,
-                status: record.status
+                captionEngine: record.captionEngine,
+                captionModel: record.captionModel,
+                captionVersion: record.captionVersion,
+                status: record.status,
+                updatedAt: record.updatedAt
             }
         });
     } catch (err) {

@@ -24,8 +24,10 @@ try {
  * cause validation to fail immediately.
  */
 const imageMetadataSchema = z.object({
-    imageId: z.string().uuid({
-        message: "imageId must be a valid UUID string"
+    imageId: z.string().min(1, {
+        message: "imageId must be a non-empty string"
+    }).max(128, {
+        message: "imageId cannot exceed 128 characters"
     }),
     fingerprint: z.string().min(1, {
         message: "fingerprint must be a non-empty string"
@@ -92,9 +94,9 @@ const updateImageRequestSchema = z.object({
  * Strict schema for a single purged image tombstone item.
  */
 const tombstoneItemSchema = z.object({
-    imageId: z.string().uuid({
-        message: "imageId must be a valid UUID string"
-    }),
+    imageId: z.string().min(1, {
+        message: "imageId must be a non-empty string"
+    }).max(128),
     fingerprint: z.string().min(1).max(256).optional().nullable().default(null),
     status: z.literal('deleted', {
         errorMap: () => ({ message: "tombstone status must be 'deleted'" })

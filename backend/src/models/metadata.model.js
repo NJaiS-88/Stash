@@ -1,5 +1,26 @@
 const mongoose = require('mongoose');
 
+/**
+ * Phase 28 — MongoDB Semantic Store
+ *
+ * ARCHITECTURAL SEPARATION OF RESPONSIBILITY:
+ * ─────────────────────────────────────────────────────────────
+ * • MongoDB knows:   "What does A101 represent?"
+ *   - Semantic caption, vision AI model/engine, status, salted fingerprint
+ *   - Completely BLIND to local paths, directories, filenames, or binaries
+ *
+ * • IndexedDB knows: "Where is A101 currently located?"
+ *   - Local directory handles, relative file paths, filenames, on-device cache
+ * ─────────────────────────────────────────────────────────────
+ */
+
+const FORBIDDEN_FILESYSTEM_FIELDS = Object.freeze([
+    'path', 'filePath', 'absolutePath', 'relativePath',
+    'fileName', 'folderId', 'folderName', 'handle',
+    'directory', 'dirHandle', 'fileHandle', 'blob',
+    'blobUrl', 'base64', 'binary', 'contentHash', 'rawHash'
+]);
+
 const metadataSchema = new mongoose.Schema({
     userId: {
         type: mongoose.Schema.Types.ObjectId,
@@ -14,22 +35,18 @@ const metadataSchema = new mongoose.Schema({
     },
     fingerprint: {
         type: String,
-        index: true,
-        default: null
+        required: true,
+        index: true
     },
     caption: {
         type: String,
-        default: ''
-    },
-    keywords: [{
-        type: String,
+        required: true,
         trim: true
-    }],
-    status: {
+    },
+    captionEngine: {
         type: String,
-        enum: ['available', 'missing', 'deleted'],
-        default: 'available',
-        index: true
+        enum: ['local', 'browser'],
+        default: 'local'
     },
     captionModel: {
         type: String,
@@ -39,18 +56,35 @@ const metadataSchema = new mongoose.Schema({
         type: Number,
         default: 1
     },
-    captionEngine: {
+    status: {
         type: String,
-        enum: ['local', 'browser'],
-        default: 'local'
+        enum: ['available', 'missing', 'deleted'],
+        default: 'available',
+        index: true
     },
-    updatedAt: {
-        type: Date,
-        default: Date.now
-    }
-}, { timestamps: true });
+    keywords: [{
+        type: String,
+        trim: true
+    }]
+}, {
+    timestamps: true,
+    strict: true // Strict schema rejection of unexpected fields
+});
 
-// Compound unique index ensuring each user can have one record per imageId
+// Guardrail: Enforce zero filesystem leakage at the database layer
+metadataSchema.pre('validate', function(next) {
+    for (const field of FORBIDDEN_FILESYSTEM_FIELDS) {
+        if (this.get(field) !== undefined) {
+            return next(new Error(`[SemanticStore] Privacy Violation: MongoDB cannot store local filesystem location field '${field}'.`));
+        }
+    }
+    next();
+});
+
+// Indexes for high-performance semantic retrieval
 metadataSchema.index({ userId: 1, imageId: 1 }, { unique: true });
+metadataSchema.index({ userId: 1, fingerprint: 1 });
+metadataSchema.index({ userId: 1, status: 1 });
+metadataSchema.index({ caption: 'text' });
 
 module.exports = mongoose.model('Metadata', metadataSchema);
