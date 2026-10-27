@@ -499,6 +499,47 @@ export async function getAvailableImagesByFolder(folderId, ownerId = getLocalOwn
 }
 
 /**
+ * Phase 30: Updates an image record's availability status ('available' | 'missing').
+ * Strictly preserves caption, fingerprint, keywords, and all semantic information.
+ * Does not delete the record.
+ *
+ * @param {string} imageId
+ * @param {'available'|'missing'} status
+ * @param {string} [ownerId]
+ * @returns {Promise<boolean>}
+ */
+export async function setImageAvailability(imageId, status, ownerId = getLocalOwnerId()) {
+    if (!imageId || !status) return false;
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readwrite');
+            const store = tx.objectStore(IMAGES_STORE);
+            const req = store.get(imageId);
+            req.onsuccess = () => {
+                const record = req.result;
+                if (!record) {
+                    resolve(false);
+                    return;
+                }
+                const updated = {
+                    ...record,
+                    status,
+                    missingSince: status === 'missing' ? (record.missingSince || Date.now()) : null
+                };
+                const putReq = store.put(updated);
+                putReq.onsuccess = () => resolve(true);
+                putReq.onerror = () => reject(putReq.error);
+            };
+            req.onerror = () => reject(req.error);
+        });
+    } catch (err) {
+        console.error('Error updating image availability in IndexedDB:', imageId, err);
+        return false;
+    }
+}
+
+/**
  * Phase 10: Permanently deletes a single image record from IndexedDB (DELETED state).
  * Prepares deleted imageId for cloud tombstone cleanup (MongoDB & Pinecone).
  *

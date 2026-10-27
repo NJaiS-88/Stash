@@ -677,6 +677,8 @@ export async function reconcileGlobalSnapshot(globalSnapshot, allExistingRecords
     return {
         allRecords,
         toUpsert,
+        newlyMissing,
+        restored,
         summary
     };
 }

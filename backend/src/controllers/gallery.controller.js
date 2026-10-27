@@ -259,12 +259,12 @@ const reconcileMetadata = async (req, res) => {
         const userId = req.user.id;
         const localItems = req.validatedData.items;
 
-        const localIdMap = new Map(localItems.map(item => [item.imageId, item.fingerprint]));
-        const localIds = Array.from(localIdMap.keys());
+        const localMap = new Map(localItems.map(item => [item.imageId, item]));
+        const localIds = Array.from(localMap.keys());
 
         // Fetch all matching records from user's cloud index
         const cloudRecords = await Metadata.find(
-            { userId, imageId: { $in: localIds } },
+            { imageId: { $in: localIds }, userId },
             'imageId fingerprint caption status'
         ).lean();
 
@@ -273,16 +273,38 @@ const reconcileMetadata = async (req, res) => {
         const missingInCloud = [];
         const upToDate = [];
         const deletedInCloud = [];
+        const availabilitySyncOps = [];
 
-        for (const localId of localIds) {
+        for (const [localId, localItem] of localMap.entries()) {
             const cloudRec = cloudMap.get(localId);
             if (!cloudRec) {
                 missingInCloud.push(localId);
             } else if (cloudRec.status === 'deleted') {
                 deletedInCloud.push(localId);
             } else {
+                // Phase 30: Availability Synchronization
+                // If local status differs from cloud status (available <-> missing), update MongoDB
+                // while strictly keeping caption & fingerprint intact.
+                if (localItem.status && localItem.status !== cloudRec.status && localItem.status !== 'deleted') {
+                    availabilitySyncOps.push({
+                        updateOne: {
+                            filter: { imageId: localId, userId },
+                            update: {
+                                $set: {
+                                    status: localItem.status,
+                                    updatedAt: new Date()
+                                }
+                            }
+                        }
+                    });
+                }
                 upToDate.push(localId);
             }
+        }
+
+        if (availabilitySyncOps.length > 0) {
+            await Metadata.bulkWrite(availabilitySyncOps);
+            console.log(`[Reconcile] Phase 30: Synchronized availability for ${availabilitySyncOps.length} photo(s) in cloud.`);
         }
 
         return res.status(200).json({
@@ -291,11 +313,52 @@ const reconcileMetadata = async (req, res) => {
             missingInCloud,
             upToDateCount: upToDate.length,
             deletedInCloudCount: deletedInCloud.length,
-            deletedInCloud
+            deletedInCloud,
+            availabilitySynchronizedCount: availabilitySyncOps.length
         });
     } catch (err) {
         console.error('[GalleryController] Error reconciling metadata:', err);
         return res.status(500).json({ message: "Internal server error reconciling metadata" });
+    }
+};
+
+/**
+ * POST /api/gallery/availability
+ * Phase 30: Availability Synchronization
+ * When an image transitions: available <-> missing:
+ * Updates status in MongoDB for { imageId, userId: req.user.id }.
+ * Strictly preserves caption, fingerprint, and all semantic information.
+ * Does NOT immediately permanently delete semantic information.
+ */
+const syncAvailability = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { updates } = req.validatedData;
+
+        // Construct atomic bulk update operations paired strictly with userId
+        const bulkOps = updates.map(item => ({
+            updateOne: {
+                filter: { imageId: item.imageId, userId },
+                update: {
+                    $set: {
+                        status: item.status,
+                        updatedAt: new Date()
+                    }
+                }
+            }
+        }));
+
+        const result = await Metadata.bulkWrite(bulkOps);
+
+        return res.status(200).json({
+            message: "Availability synchronized successfully",
+            matchedCount: result.matchedCount,
+            modifiedCount: result.modifiedCount,
+            syncedCount: updates.length
+        });
+    } catch (err) {
+        console.error('[GalleryController] Error synchronizing availability:', err);
+        return res.status(500).json({ message: "Internal server error synchronizing availability" });
     }
 };
 
@@ -561,6 +624,7 @@ module.exports = {
     reconcileMetadata,
     searchMetadata,
     askMetadata,
+    syncAvailability,
     syncMetadata,
     syncTombstones,
     getCloudStatus

@@ -118,13 +118,14 @@ const syncTombstonesRequestSchema = z.object({
 });
 
 /**
- * Strict schema for Phase 27 reconciliation request payload:
- * { items: [ { imageId, fingerprint }, ... ] }
+ * Strict schema for Phase 27 / 30 reconciliation request payload:
+ * { items: [ { imageId, fingerprint, status? }, ... ] }
  */
 const reconcileRequestSchema = z.object({
     items: z.array(z.object({
         imageId: z.string().uuid({ message: "imageId must be a valid UUID string" }),
-        fingerprint: z.string().min(1).max(256).optional().nullable()
+        fingerprint: z.string().min(1).max(256).optional().nullable(),
+        status: z.enum(['available', 'missing', 'deleted']).optional()
     }).strict()).min(1, { message: "Reconcile items cannot be empty" }).max(5000, { message: "Cannot reconcile more than 5000 items in a single request" })
 }).strict({
     message: "Unexpected field in reconcile request. Only 'items' array is permitted."
@@ -153,6 +154,23 @@ const askRequestSchema = z.object({
     message: "Unexpected field in ask request. Only 'question' and optional 'imageId' are permitted."
 });
 
+/**
+ * Strict schema for Phase 30 availability synchronization request:
+ * { updates: [ { imageId: string, status: 'available' | 'missing' }, ... ] }
+ */
+const availabilitySyncRequestSchema = z.object({
+    updates: z.array(z.object({
+        imageId: z.string().min(1, { message: "imageId must be a non-empty string" }).max(128),
+        status: z.enum(['available', 'missing'], {
+            errorMap: () => ({ message: "status must be either 'available' or 'missing'" })
+        })
+    }).strict({
+        message: "Unexpected field in availability update item. Only 'imageId' and 'status' are permitted."
+    })).min(1, { message: "updates array must contain at least 1 record" }).max(1000, { message: "updates array cannot exceed 1000 records" })
+}).strict({
+    message: "Unexpected field in availability sync request. Only 'updates' array is permitted."
+});
+
 module.exports = {
     z,
     imageMetadataSchema,
@@ -163,5 +181,6 @@ module.exports = {
     syncTombstonesRequestSchema,
     reconcileRequestSchema,
     searchRequestSchema,
-    askRequestSchema
+    askRequestSchema,
+    availabilitySyncRequestSchema
 };

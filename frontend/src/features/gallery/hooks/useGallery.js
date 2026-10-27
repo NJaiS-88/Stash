@@ -3,6 +3,7 @@ import GalleryContext from '../gallery.context';
 import { selectDirectory, enumerateDirectory, flattenFiles, streamDirectoryFiles, resolveFileByPath } from '../services/fileSystem';
 import { buildImageRegistryForFolder, reconcileGlobalSnapshot } from '../services/reconciliation';
 import { scanAllFolders } from '../services/scanner';
+import { cloudSyncManager } from '../services/cloudSync';
 import {
     saveFolder,
     getAllFolders,
@@ -213,11 +214,25 @@ export const useGallery = () => {
             // Reconcile changes in background via streaming
             const missingRecords = await getMissingImages();
             const existingToMatch = [...folderRecords, ...missingRecords.filter(m => m.folderId !== folder.id)];
+            const availabilityChanges = [];
 
             await streamDirectoryFiles(folder.handle, async (batch) => {
                 const batchRecords = await buildImageRegistryForFolder(batch, folder.id, existingToMatch);
                 await saveImageRecords(batchRecords);
+
+                // Detect availability transitions (available <-> missing)
+                for (const rec of batchRecords) {
+                    const prev = existingToMatch.find(e => e.imageId === rec.imageId);
+                    if (prev && prev.status !== rec.status) {
+                        availabilityChanges.push({ imageId: rec.imageId, status: rec.status });
+                    }
+                }
             }, 100);
+
+            // Phase 30: Synchronize availability transitions to cloud MongoDB
+            if (availabilityChanges.length > 0) {
+                cloudSyncManager.syncAvailability(availabilityChanges);
+            }
 
             const refreshedRecords = await getImagesByFolder(folder.id);
             setActiveFolder(prev => (prev?.id === folder.id ? {
@@ -346,7 +361,7 @@ export const useGallery = () => {
             }
 
             const allExisting = await getAllImages();
-            const { allRecords, toUpsert, summary } = await reconcileGlobalSnapshot(globalSnapshot, allExisting);
+            const { allRecords, toUpsert, newlyMissing, restored, summary } = await reconcileGlobalSnapshot(globalSnapshot, allExisting);
 
             if (toUpsert && toUpsert.length > 0) {
                 await saveImageRecords(toUpsert);
@@ -354,6 +369,20 @@ export const useGallery = () => {
 
             const missing = allRecords.filter(r => r.status === 'missing');
             setMissingImages(missing);
+
+            // Phase 30: Availability Synchronization
+            // When available -> missing or missing -> available:
+            // Update IndexedDB (already persisted in toUpsert) and dispatch to MongoDB!
+            // Strictly preserves caption and fingerprint; never deletes semantic information.
+            const availabilityUpdates = [
+                ...(newlyMissing || []).map(m => ({ imageId: m.imageId, status: 'missing' })),
+                ...(restored || []).map(r => ({ imageId: r.imageId, status: 'available' }))
+            ];
+
+            if (availabilityUpdates.length > 0) {
+                console.log(`[useGallery] 🔄 Phase 30: Dispatching ${availabilityUpdates.length} availability update(s) to cloud MongoDB.`);
+                cloudSyncManager.syncAvailability(availabilityUpdates);
+            }
 
             return {
                 snapshot: globalSnapshot,

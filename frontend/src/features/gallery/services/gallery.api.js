@@ -102,3 +102,17 @@ export async function askCloudMetadata(question, limit = 20) {
     const response = await galleryApi.post('/ask', { question, limit });
     return response.data;
 }
+
+/**
+ * Phase 30: Availability Synchronization
+ * POST /api/gallery/availability
+ * Synchronizes 'available' <-> 'missing' status to cloud MongoDB,
+ * strictly preserving caption and fingerprint.
+ *
+ * @param {Array<{ imageId: string, status: 'available'|'missing' }>} updates
+ */
+export async function syncCloudAvailability(updates) {
+    if (!updates || updates.length === 0) return { matchedCount: 0, modifiedCount: 0 };
+    const response = await galleryApi.post('/availability', { updates });
+    return response.data;
+}

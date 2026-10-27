@@ -165,6 +165,44 @@ class CloudSyncManager {
     }
 
     /**
+     * Phase 30: Availability Synchronization
+     * Synchronizes availability status (available <-> missing) to cloud MongoDB.
+     * Preserves caption, fingerprint, and all semantic information.
+     *
+     * @param {Array<{ imageId: string, status: 'available'|'missing' }>} updates
+     * @returns {Promise<{ updatedCount: number }>}
+     */
+    async syncAvailability(updates) {
+        if (!updates || updates.length === 0) return { updatedCount: 0 };
+        try {
+            const cleanUpdates = updates.map(u => ({
+                imageId: String(u.imageId),
+                status: u.status === 'missing' ? 'missing' : 'available'
+            }));
+
+            const response = await fetch(`${CLOUD_SYNC_BASE_URL}/availability`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                credentials: 'include',
+                body: JSON.stringify({ updates: cleanUpdates })
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                console.log(`[CloudSync] 🔄 Phase 30: Synced availability for ${cleanUpdates.length} image(s) to cloud MongoDB.`);
+                return { updatedCount: data.modifiedCount || cleanUpdates.length };
+            } else {
+                const errText = await response.text().catch(() => '');
+                console.warn(`[CloudSync] Availability sync failed (status ${response.status}):`, errText);
+                return { updatedCount: 0 };
+            }
+        } catch (err) {
+            console.warn('[CloudSync] Availability sync deferred (backend offline):', err.message);
+            return { updatedCount: 0 };
+        }
+    }
+
+    /**
      * Returns current status and telemetry of cloud synchronization.
      */
     getStatus() {

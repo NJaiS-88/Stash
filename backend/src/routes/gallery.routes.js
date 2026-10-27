@@ -10,7 +10,8 @@ const {
     syncTombstonesRequestSchema,
     reconcileRequestSchema,
     searchRequestSchema,
-    askRequestSchema
+    askRequestSchema,
+    availabilitySyncRequestSchema
 } = require('../validators/metadata.schema');
 const {
     getImageMetadata,
@@ -22,6 +23,7 @@ const {
     reconcileMetadata,
     searchMetadata,
     askMetadata,
+    syncAvailability,
     syncMetadata,
     syncTombstones,
     getCloudStatus
@@ -100,6 +102,14 @@ router.post(
     enforceCloudPrivacyBoundary,
     validateRequest(syncTombstonesRequestSchema),
     syncTombstones
+);
+
+// Phase 30: Availability Synchronization
+router.post(
+    '/availability',
+    enforceCloudPrivacyBoundary,
+    validateRequest(availabilitySyncRequestSchema),
+    syncAvailability
 );
 
 router.get(
