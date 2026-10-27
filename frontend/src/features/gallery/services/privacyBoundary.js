@@ -29,6 +29,8 @@
  *   - local filesystem metadata (fileName, size, lastModified, folderId, folderName)
  */
 
+import { z } from 'zod';
+
 export const ALLOWED_CLOUD_FIELDS = Object.freeze(new Set([
     'imageId',
     'fingerprint',
@@ -39,6 +41,45 @@ export const ALLOWED_CLOUD_FIELDS = Object.freeze(new Set([
     'captionVersion',
     'captionEngine'
 ]));
+
+/**
+ * Phase 26: Strict Zod schema for client-side privacy boundary verification.
+ * .strict() ensures any unexpected field (base64, blob, path, etc.) fails validation.
+ */
+export const imageMetadataSchema = z.object({
+    imageId: z.string().uuid({
+        message: "imageId must be a valid UUID string"
+    }),
+    fingerprint: z.string().min(1, {
+        message: "fingerprint must be a non-empty string"
+    }).max(256, {
+        message: "fingerprint cannot exceed 256 characters"
+    }),
+    caption: z.string().trim().min(1, {
+        message: "caption cannot be empty"
+    }).max(1000, {
+        message: "caption cannot exceed 1000 characters"
+    }),
+    keywords: z.array(
+        z.string().trim().min(1).max(60)
+    ).max(50).optional().default([]),
+    status: z.enum(['available', 'missing', 'deleted']).default('available'),
+    captionModel: z.string().trim().min(1).max(100).optional().nullable().default(null),
+    captionVersion: z.number().int().positive().optional().default(1),
+    captionEngine: z.enum(['local', 'browser']).optional().default('local')
+}).strict({
+    message: "Unexpected field detected in cloud payload. Binary data and local filesystem metadata are strictly forbidden."
+});
+
+export const tombstoneSchema = z.object({
+    imageId: z.string().uuid({
+        message: "imageId must be a valid UUID string"
+    }),
+    fingerprint: z.string().min(1).max(256).optional().nullable().default(null),
+    status: z.literal('deleted').default('deleted')
+}).strict({
+    message: "Unexpected field in tombstone. Local file names and paths are strictly forbidden."
+});
 
 export const FORBIDDEN_FIELD_NAMES = Object.freeze(new Set([
     'file',
@@ -181,6 +222,14 @@ export function validateCloudPayload(payload, originalRecord = null) {
     // Rule 5: Ensure imageId is valid
     if (!payload.imageId || typeof payload.imageId !== 'string' || payload.imageId.trim().length === 0) {
         violations.push('Missing or invalid imageId in cloud payload');
+    }
+
+    // Rule 6 (Phase 26): Strict Zod Schema Parse (.strict() catches any unexpected fields)
+    const zodResult = imageMetadataSchema.safeParse(payload);
+    if (!zodResult.success) {
+        for (const issue of zodResult.error.issues) {
+            violations.push(`Zod validation: [${issue.path.join('.') || 'payload'}] ${issue.message}`);
+        }
     }
 
     return {

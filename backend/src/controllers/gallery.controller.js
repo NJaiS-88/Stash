@@ -1,44 +1,55 @@
+/**
+ * Phase 26 — Cloud Gallery Controller with Explicit Database Object Construction
+ *
+ * Rules:
+ * 1. Operates ONLY on data parsed and validated by strict Zod schemas (req.validatedData).
+ * 2. Explicitly constructs every database object property-by-property.
+ * 3. NEVER executes Metadata.create(req.body) or bulkWrite(req.body).
+ */
+
 const Metadata = require('../models/metadata.model');
 
 /**
- * Phase 25: Cloud Sync Endpoint
- * Receives allowlisted semantic metadata across the privacy boundary and upserts
- * records in the user's cloud index.
+ * Syncs strictly validated semantic metadata into the user's cloud index.
+ * Explicitly constructs each database object field by field.
  */
 const syncMetadata = async (req, res) => {
     try {
         const userId = req.user.userId;
-        const items = req.body.items;
+        const validatedItems = req.validatedData?.items;
 
-        if (!items || !Array.isArray(items) || items.length === 0) {
-            return res.status(400).json({ message: "No items provided for sync" });
+        if (!validatedItems || validatedItems.length === 0) {
+            return res.status(400).json({ message: "No validated items provided for sync" });
         }
 
-        const bulkOps = items.map(item => ({
-            updateOne: {
-                filter: { userId, imageId: item.imageId },
-                update: {
-                    $set: {
-                        userId,
-                        imageId: item.imageId,
-                        fingerprint: item.fingerprint || null,
-                        caption: item.caption || '',
-                        keywords: Array.isArray(item.keywords) ? item.keywords : [],
-                        status: item.status || 'available',
-                        captionModel: item.captionModel || null,
-                        captionVersion: item.captionVersion || 1,
-                        captionEngine: item.captionEngine || 'local',
-                        updatedAt: new Date()
-                    }
-                },
-                upsert: true
-            }
-        }));
+        // Explicitly construct database objects — NEVER pass raw req.body
+        const bulkOps = validatedItems.map(item => {
+            const explicitRecord = {
+                userId,
+                imageId: item.imageId,
+                fingerprint: item.fingerprint,
+                caption: item.caption,
+                keywords: Array.isArray(item.keywords) ? item.keywords : [],
+                status: item.status,
+                captionModel: item.captionModel || null,
+                captionVersion: item.captionVersion,
+                captionEngine: item.captionEngine,
+                updatedAt: new Date()
+            };
+
+            return {
+                updateOne: {
+                    filter: { userId, imageId: explicitRecord.imageId },
+                    update: { $set: explicitRecord },
+                    upsert: true
+                }
+            };
+        });
 
         const result = await Metadata.bulkWrite(bulkOps);
 
         return res.status(200).json({
-            message: "Metadata synced successfully across privacy boundary",
+            message: "Metadata synced successfully with strict schema validation",
             matchedCount: result.matchedCount,
             modifiedCount: result.modifiedCount,
             upsertedCount: result.upsertedCount
@@ -50,28 +61,28 @@ const syncMetadata = async (req, res) => {
 };
 
 /**
- * Phase 25: Cloud Tombstone Endpoint
- * Receives purged image tombstones ({ imageId, fingerprint, status: 'deleted' })
- * and flags them as deleted in cloud storage.
+ * Processes purged image tombstones.
+ * Explicitly extracts validated imageId and sets status to 'deleted'.
  */
 const syncTombstones = async (req, res) => {
     try {
         const userId = req.user.userId;
-        const tombstones = req.body.tombstones;
+        const validatedTombstones = req.validatedData?.tombstones;
 
-        if (!tombstones || !Array.isArray(tombstones) || tombstones.length === 0) {
-            return res.status(400).json({ message: "No tombstones provided" });
+        if (!validatedTombstones || validatedTombstones.length === 0) {
+            return res.status(400).json({ message: "No validated tombstones provided" });
         }
 
-        const imageIds = tombstones.map(t => t.imageId).filter(Boolean);
+        // Explicitly extract validated imageId strings only
+        const validImageIds = validatedTombstones.map(t => t.imageId);
 
         const result = await Metadata.updateMany(
-            { userId, imageId: { $in: imageIds } },
+            { userId, imageId: { $in: validImageIds } },
             { $set: { status: 'deleted', updatedAt: new Date() } }
         );
 
         return res.status(200).json({
-            message: "Tombstones processed successfully",
+            message: "Tombstones processed successfully with strict schema validation",
             deletedCount: result.modifiedCount
         });
     } catch (err) {
@@ -92,7 +103,8 @@ const getCloudStatus = async (req, res) => {
         return res.status(200).json({
             totalIndexed,
             totalDeleted,
-            privacyBoundaryActive: true
+            privacyBoundaryActive: true,
+            strictValidationActive: true
         });
     } catch (err) {
         console.error('[GalleryController] Error fetching cloud status:', err);
