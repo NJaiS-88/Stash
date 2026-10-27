@@ -19,7 +19,9 @@ import {
     purgeMissingImages
 } from './galleryDb';
 
-const CLOUD_SYNC_BASE_URL = 'http://localhost:3000/api/gallery';
+import { API_BASE_URL } from '../../../config/api.config';
+
+const CLOUD_SYNC_BASE_URL = `${API_BASE_URL}/api/gallery`;
 
 class CloudSyncManager {
     constructor() {

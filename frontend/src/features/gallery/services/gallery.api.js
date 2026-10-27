@@ -1,8 +1,9 @@
 import axios from 'axios';
 import { enforcePrivacyBoundary } from './privacyBoundary';
+import { API_BASE_URL } from '../../../config/api.config';
 
 const galleryApi = axios.create({
-    baseURL: 'http://localhost:3000/api/gallery',
+    baseURL: `${API_BASE_URL}/api/gallery`,
     withCredentials: true,
 });
 
@@ -17,7 +18,7 @@ galleryApi.interceptors.response.use(
         ) {
             originalRequest._retry = true;
             try {
-                await axios.post('http://localhost:3000/api/auth/refresh-token', {}, { withCredentials: true });
+                await axios.post(`${API_BASE_URL}/api/auth/refresh-token`, {}, { withCredentials: true });
                 return galleryApi(originalRequest);
             } catch (refreshErr) {
                 return Promise.reject(refreshErr);

@@ -6,8 +6,26 @@ const cors = require('cors');
 
 const app = express();
 
+// Trust reverse proxy for Render / Cloud deployments (enables secure cookies over HTTPS proxy)
+app.set('trust proxy', 1);
+
+const allowedOrigins = [
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'https://stash-phi-lake.vercel.app'
+];
+if (process.env.FRONTEND_URL) {
+    allowedOrigins.push(process.env.FRONTEND_URL);
+}
+
 app.use(cors({
-    origin: 'http://localhost:5173',
+    origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+            return callback(null, true);
+        }
+        return callback(new Error(`Not allowed by CORS: ${origin}`));
+    },
     credentials: true,
 }));
 

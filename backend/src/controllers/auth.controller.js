@@ -23,13 +23,13 @@ const generateTokens = (userId) => {
 };
 
 const setAuthCookies = (res, accessToken, refreshToken) => {
-    const isProduction = process.env.NODE_ENV === 'production';
+    const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 
     res.cookie('token', accessToken, {
         httpOnly: true,
         secure: isProduction,
         maxAge: 15 * 60 * 1000, // 15 minutes
-        sameSite: isProduction ? 'strict' : 'lax'
+        sameSite: isProduction ? 'none' : 'lax'
     });
 
     if (refreshToken) {
@@ -37,7 +37,7 @@ const setAuthCookies = (res, accessToken, refreshToken) => {
             httpOnly: true,
             secure: isProduction,
             maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
-            sameSite: isProduction ? 'strict' : 'lax'
+            sameSite: isProduction ? 'none' : 'lax'
         });
     }
 };
@@ -172,8 +172,14 @@ const logoutUser = async (req, res) => {
             await blacklistModel.insertMany(tokensToBlacklist).catch(() => {});
         }
 
-        res.clearCookie('token');
-        res.clearCookie('refreshToken');
+        const isProduction = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
+        const cookieOpts = {
+            httpOnly: true,
+            secure: isProduction,
+            sameSite: isProduction ? 'none' : 'lax'
+        };
+        res.clearCookie('token', cookieOpts);
+        res.clearCookie('refreshToken', cookieOpts);
 
         return res.status(200).json({ message: "Logout successful" });
     } catch (error) {
