@@ -28,6 +28,81 @@ const constructRetrievalText = (caption, keywords = []) => {
 };
 
 /**
+ * Phase 32: Asynchronously synchronizes semantic embeddings to Pinecone via RAG service.
+ * Enforces strict privacy boundary (ZERO local paths/photos).
+ * Stores ONLY:
+ * {
+ *   id: imageId,
+ *   values: embedding,
+ *   metadata: { userId }
+ * }
+ */
+const syncToPinecone = async (userId, items) => {
+    if (!items || items.length === 0) return;
+    const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000';
+    try {
+        // Step 1: Compute dense text embeddings
+        const embedPayload = {
+            items: items.map(it => ({
+                imageId: it.imageId,
+                caption: it.caption || '',
+                keywords: it.keywords || []
+            }))
+        };
+        const embedRes = await fetch(`${RAG_SERVICE_URL}/embed/batch`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(embedPayload),
+            signal: AbortSignal.timeout(6000)
+        });
+        if (!embedRes.ok) return;
+
+        const embedData = await embedRes.json();
+        const vectorItems = (embedData.items || []).map(v => ({
+            imageId: v.imageId,
+            embedding: v.embedding
+        }));
+
+        if (vectorItems.length === 0) return;
+
+        // Step 2: Upsert into Pinecone strictly under user's namespace
+        await fetch(`${RAG_SERVICE_URL}/pinecone/upsert`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                userId: String(userId),
+                items: vectorItems
+            }),
+            signal: AbortSignal.timeout(6000)
+        });
+    } catch (err) {
+        // Fail-safe: Vector store sync errors must never crash primary metadata flow
+        console.log('[PineconeSync] Notice: Vector store sync delayed/offline:', err.message);
+    }
+};
+
+/**
+ * Phase 32: Asynchronously deletes vectors from Pinecone user namespace upon permanent deletion or tombstone.
+ */
+const deleteFromPinecone = async (userId, imageIds) => {
+    if (!imageIds || imageIds.length === 0) return;
+    const RAG_SERVICE_URL = process.env.RAG_SERVICE_URL || 'http://127.0.0.1:8000';
+    try {
+        await fetch(`${RAG_SERVICE_URL}/pinecone/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                userId: String(userId),
+                imageIds: imageIds.map(String)
+            }),
+            signal: AbortSignal.timeout(4000)
+        });
+    } catch (err) {
+        console.log('[PineconeDelete] Notice: Vector store delete delayed/offline:', err.message);
+    }
+};
+
+/**
  * GET /api/gallery/images/:imageId
  * Phase 29: Read a single image metadata record.
  * Query MUST pair: { imageId, userId: req.user.id }. Never { imageId } alone.
@@ -140,6 +215,9 @@ const createImageMetadata = async (req, res) => {
             { $set: explicitRecord },
             { upsert: true, new: true, runValidators: true }
         );
+
+        // Phase 32: Asynchronously sync vector embedding to Pinecone user namespace
+        syncToPinecone(userId, [explicitRecord]).catch(() => {});
 
         return res.status(201).json({
             message: "Image metadata saved successfully",
@@ -255,6 +333,9 @@ const purgeImageMetadata = async (req, res) => {
         if (!record) {
             return res.status(404).json({ message: `Image with ID ${imageId} not found for this user` });
         }
+
+        // Phase 32: Purge vector from Pinecone user namespace
+        deleteFromPinecone(userId, [imageId]).catch(() => {});
 
         return res.status(200).json({
             message: "Image metadata permanently deleted from cloud index",
@@ -605,6 +686,9 @@ const syncMetadata = async (req, res) => {
 
         const result = await Metadata.bulkWrite(bulkOps);
 
+        // Phase 32: Asynchronously sync vector embeddings to Pinecone user namespace
+        syncToPinecone(userId, validatedItems).catch(() => {});
+
         return res.status(200).json({
             message: "Metadata synced successfully with strict schema validation",
             matchedCount: result.matchedCount,
@@ -636,6 +720,9 @@ const syncTombstones = async (req, res) => {
             { userId, imageId: { $in: validImageIds } },
             { $set: { status: 'deleted', updatedAt: new Date() } }
         );
+
+        // Phase 32: Purge tombstoned vectors from Pinecone user namespace
+        deleteFromPinecone(userId, validImageIds).catch(() => {});
 
         return res.status(200).json({
             message: "Tombstones processed successfully with strict schema validation",

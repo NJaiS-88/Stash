@@ -18,7 +18,8 @@ const ALLOWED_CLOUD_FIELDS = new Set([
     'status',
     'captionModel',
     'captionVersion',
-    'captionEngine'
+    'captionEngine',
+    'retrievalText'
 ]);
 
 const FORBIDDEN_KEYS = new Set([

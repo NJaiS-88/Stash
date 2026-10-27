@@ -7,6 +7,7 @@ natural language question-answering over the user's private photo captions.
 import os
 from typing import List, Dict, Any, Optional
 from pipeline import construct_retrieval_text, TextEmbeddingPipeline
+from pinecone_service import PineconeManager
 import numpy as np
 
 # LangChain Imports
@@ -57,6 +58,7 @@ class StashRAGChain:
         # Default to configured GEMINI_MODEL
         self.model_name = (model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")).strip()
         self.embed_pipeline = TextEmbeddingPipeline(api_key=self.api_key)
+        self.pinecone = PineconeManager()
         self.llm = None
         self.chain = None
         self._init_llm()
@@ -93,22 +95,49 @@ class StashRAGChain:
         """Allows dynamic runtime reload of the API key when pasted in .env."""
         self.api_key = api_key
         self.embed_pipeline = TextEmbeddingPipeline(api_key=self.api_key)
+        self.pinecone.reload()
         self._init_llm()
 
     def retrieve_relevant_images(
         self,
         question: str,
         images: List[Dict[str, Any]],
-        top_k: int = 5
+        top_k: int = 5,
+        user_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Embeds the question text and performs cosine similarity retrieval
-        over the pre-constructed retrieval texts of user images.
+        Embeds question text and performs user-isolated vector retrieval:
+        1. If user_id is provided and Pinecone index holds vectors, queries Pinecone namespace=str(user_id)
+        2. Validates ownership (metadata.userId == user_id)
+        3. Falls back smoothly to local candidate cosine similarity if needed
         """
+        q_vec = np.array(self.embed_pipeline.embed_text(question), dtype=np.float32)
+
+        # Phase 32: Try Pinecone user namespace query first if user_id is present
+        if user_id:
+            try:
+                pinecone_matches = self.pinecone.query_vectors(
+                    user_id=str(user_id),
+                    vector=q_vec.tolist(),
+                    top_k=top_k
+                )
+                if pinecone_matches:
+                    img_map = {img.get("imageId"): img for img in images}
+                    ranked_matches = []
+                    for match in pinecone_matches:
+                        img_id = match["imageId"]
+                        if img_id in img_map:
+                            candidate = dict(img_map[img_id])
+                            candidate["similarity"] = match["score"]
+                            ranked_matches.append(candidate)
+                    if ranked_matches:
+                        return ranked_matches
+            except Exception as e:
+                print(f"[StashRAGChain] Notice: Pinecone query fallback to candidate similarity: {e}")
+
         if not images:
             return []
 
-        q_vec = np.array(self.embed_pipeline.embed_text(question), dtype=np.float32)
         q_norm = np.linalg.norm(q_vec)
         if q_norm > 0:
             q_vec = q_vec / q_norm
@@ -145,11 +174,12 @@ class StashRAGChain:
         self,
         question: str,
         images: List[Dict[str, Any]],
-        top_k: int = 5
+        top_k: int = 5,
+        user_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Main RAG invocation:
-        1. Retrieval: retrieves top relevant images using text embeddings
+        1. Retrieval: retrieves top relevant images using Pinecone / text embeddings
         2. Augmentation: formats context string with image metadata
         3. Generation: prompts Gemini Flash 2.5 via LangChain chain
         """
@@ -160,8 +190,8 @@ class StashRAGChain:
                 "referencedImages": []
             }
 
-        # 1. Retrieve top-k relevant photos
-        relevant = self.retrieve_relevant_images(question, images, top_k=top_k)
+        # 1. Retrieve top-k relevant photos (user isolated)
+        relevant = self.retrieve_relevant_images(question, images, top_k=top_k, user_id=user_id)
 
         # Filter out negative / irrelevant matches
         valid_matches = [m for m in relevant if m.get("similarity", 0) > 0.15]

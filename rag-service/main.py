@@ -15,11 +15,12 @@ load_dotenv()
 
 from pipeline import construct_retrieval_text, TextEmbeddingPipeline
 from rag_chain import StashRAGChain
+from pinecone_service import PineconeManager
 
 app = FastAPI(
     title="Stash RAG & Embedding Service",
-    description="Privacy-preserving text embedding & LangChain RAG pipeline using Google Gemini Flash 2.5",
-    version="1.0.0"
+    description="Privacy-preserving text embedding, Pinecone vector storage, & LangChain RAG pipeline using Google Gemini Flash 2.5",
+    version="1.1.0"
 )
 
 # Enable CORS for local cross-service communication
@@ -34,6 +35,7 @@ app.add_middleware(
 # Initialize pipelines
 rag_chain = StashRAGChain()
 embed_pipeline = TextEmbeddingPipeline()
+pinecone_manager = PineconeManager()
 
 
 # Pydantic Schemas
@@ -79,10 +81,28 @@ class RagAskResponse(BaseModel):
     model: str
     referencedImages: List[ReferencedImage]
 
+# Phase 32: Pinecone Vector Schemas
+class PineconeItem(BaseModel):
+    imageId: str = Field(..., description="Unique Image ID")
+    embedding: List[float] = Field(..., description="Dense semantic vector embedding")
+
+class PineconeUpsertRequest(BaseModel):
+    userId: str = Field(..., description="User ID for strict namespace isolation and ownership")
+    items: List[PineconeItem] = Field(..., description="List of vector items to store")
+
+class PineconeQueryRequest(BaseModel):
+    userId: str = Field(..., description="User ID for strict namespace isolation and ownership")
+    vector: List[float] = Field(..., description="Dense query vector")
+    top_k: Optional[int] = Field(default=5, ge=1, le=50)
+
+class PineconeDeleteRequest(BaseModel):
+    userId: str = Field(..., description="User ID for strict namespace isolation and ownership")
+    imageIds: List[str] = Field(..., description="List of Image IDs to purge from namespace")
+
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint providing model telemetry and API key status."""
+    """Health check endpoint providing model telemetry, API key status, and Pinecone connection status."""
     has_key = bool(os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY"))
     return {
         "status": "online",
@@ -90,21 +110,24 @@ def health_check():
         "llmModel": rag_chain.model_name,
         "embeddingModel": embed_pipeline.model_name,
         "geminiApiKeyConfigured": has_key,
-        "langchainActive": bool(rag_chain.chain)
+        "langchainActive": bool(rag_chain.chain),
+        "pinecone": pinecone_manager.get_status()
     }
 
 
 @app.post("/reload-key")
 def reload_api_key():
-    """Reloads API key from .env file without restarting the service."""
+    """Reloads API keys from .env file without restarting the service."""
     load_dotenv(override=True)
-    new_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    rag_chain.reload_key(new_key)
-    embed_pipeline.__init__(api_key=new_key)
+    new_gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+    rag_chain.reload_key(new_gemini_key)
+    embed_pipeline.__init__(api_key=new_gemini_key)
+    pinecone_manager.reload()
     return {
-        "message": "API key reloaded successfully",
-        "hasKey": bool(new_key),
-        "langchainActive": bool(rag_chain.chain)
+        "message": "Configuration reloaded successfully",
+        "hasGeminiKey": bool(new_gemini_key),
+        "langchainActive": bool(rag_chain.chain),
+        "pinecone": pinecone_manager.get_status()
     }
 
 
@@ -144,12 +167,90 @@ def embed_batch_images(req: BatchEmbedRequest):
 @app.post("/rag/ask", response_model=RagAskResponse)
 def ask_question(req: RagAskRequest):
     """
-    Phase 31: LangChain RAG pipeline using Google Gemini Flash 2.5.
+    Phase 31 & 32: LangChain RAG pipeline using Google Gemini Flash 2.5 and Pinecone.
     Answers natural language questions over the user's private photo captions.
     """
     images_dict = [img.model_dump() for img in req.images]
-    result = rag_chain.ask(req.question, images_dict, top_k=req.top_k)
+    result = rag_chain.ask(req.question, images_dict, top_k=req.top_k, user_id=req.userId)
     return result
+
+
+# =======================================================
+# Phase 32: Pinecone Vector Store Endpoints
+# Strict User Isolation (Namespace + Ownership Validation)
+# =======================================================
+
+@app.post("/pinecone/upsert")
+def pinecone_upsert(req: PineconeUpsertRequest):
+    """
+    Phase 32: Upsert vector embeddings strictly into the user's namespace.
+    Stores:
+    {
+        id: imageId,
+        values: embedding,
+        metadata: {
+            userId: req.userId
+        }
+    }
+    Zero file paths or photo binaries stored.
+    """
+    if not req.userId or not req.userId.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="userId is required for user-isolated Pinecone storage"
+        )
+
+    items_dict = [item.model_dump() for item in req.items]
+    res = pinecone_manager.upsert_vectors(user_id=req.userId.strip(), items=items_dict)
+    return res
+
+
+@app.post("/pinecone/query")
+def pinecone_query(req: PineconeQueryRequest):
+    """
+    Phase 32: Queries nearest vectors strictly within the user's namespace.
+    Validates ownership to ensure cross-user isolation.
+    """
+    if not req.userId or not req.userId.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="userId is required for user-isolated Pinecone query"
+        )
+
+    matches = pinecone_manager.query_vectors(
+        user_id=req.userId.strip(),
+        vector=req.vector,
+        top_k=req.top_k
+    )
+    return {
+        "userId": req.userId.strip(),
+        "namespace": req.userId.strip(),
+        "matches": matches,
+        "count": len(matches)
+    }
+
+
+@app.post("/pinecone/delete")
+def pinecone_delete(req: PineconeDeleteRequest):
+    """
+    Phase 32: Deletes vector IDs strictly from the user's namespace.
+    """
+    if not req.userId or not req.userId.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="userId is required for user-isolated Pinecone delete"
+        )
+
+    res = pinecone_manager.delete_vectors(user_id=req.userId.strip(), image_ids=req.imageIds)
+    return res
+
+
+@app.get("/pinecone/status")
+def pinecone_status(userId: Optional[str] = None):
+    """
+    Phase 32: Telemetry status of Pinecone connection and user namespace isolation.
+    """
+    return pinecone_manager.get_status(user_id=userId)
 
 
 if __name__ == "__main__":
