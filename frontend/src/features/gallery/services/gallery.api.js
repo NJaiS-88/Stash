@@ -29,6 +29,15 @@ galleryApi.interceptors.response.use(
 );
 
 /**
+ * Phase 29: Read single image metadata
+ * GET /api/gallery/images/:imageId
+ */
+export async function getCloudImageMetadata(imageId) {
+    const response = await galleryApi.get(`/images/${imageId}`);
+    return response.data;
+}
+
+/**
  * Phase 27: Create/Upsert single image metadata
  * POST /api/gallery/images
  */
@@ -54,6 +63,15 @@ export async function updateCloudImageMetadata(imageId, updates) {
  */
 export async function deleteCloudImageMetadata(imageId) {
     const response = await galleryApi.delete(`/images/${imageId}`);
+    return response.data;
+}
+
+/**
+ * Phase 29: Hard delete / purge image metadata permanently
+ * DELETE /api/gallery/images/:imageId/permanent
+ */
+export async function purgeCloudImageMetadata(imageId) {
+    const response = await galleryApi.delete(`/images/${imageId}/permanent`);
     return response.data;
 }
 

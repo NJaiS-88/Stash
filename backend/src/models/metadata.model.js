@@ -85,6 +85,40 @@ metadataSchema.pre('validate', function(next) {
 metadataSchema.index({ userId: 1, imageId: 1 }, { unique: true });
 metadataSchema.index({ userId: 1, fingerprint: 1 });
 metadataSchema.index({ userId: 1, status: 1 });
-metadataSchema.index({ caption: 'text' });
+metadataSchema.index({ userId: 1, caption: 'text' });
+
+/**
+ * Phase 29 — Cloud Authorization / User Isolation Guardrail
+ * Enforces fail-closed database query isolation.
+ * Every query containing `imageId` MUST be paired with `userId: req.user.id`.
+ * Never allows { imageId } alone.
+ */
+const QUERY_MIDDLEWARE_METHODS = [
+    'find',
+    'findOne',
+    'findOneAndUpdate',
+    'findOneAndDelete',
+    'findOneAndReplace',
+    'updateOne',
+    'updateMany',
+    'deleteOne',
+    'deleteMany',
+    'countDocuments',
+    'estimatedDocumentCount'
+];
+
+metadataSchema.pre(QUERY_MIDDLEWARE_METHODS, function() {
+    const filter = this.getQuery() || {};
+
+    // Rule: Never { imageId } alone. Always { imageId, userId }
+    if (filter.imageId !== undefined && !filter.userId) {
+        throw new Error('[CloudAuthorization] Security Violation: Query specifies imageId without userId! Every query must pair { imageId, userId: req.user.id }.');
+    }
+
+    // Fail-closed guard: Reject any query lacking userId unless querying internal _id or explicit system bypass
+    if (filter.userId === undefined && !filter._id && !this.options?._systemBypass) {
+        throw new Error('[CloudAuthorization] Security Violation: Unscoped query on Metadata collection! userId is strictly required for user isolation.');
+    }
+});
 
 module.exports = mongoose.model('Metadata', metadataSchema);

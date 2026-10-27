@@ -1,19 +1,103 @@
 /**
- * Phase 26 & Phase 27 — Cloud Gallery Controller
+ * Phase 29 — Cloud Authorization / User Isolation
  *
  * Rules:
- * 1. Owner ALWAYS comes from req.user.id. Never from req.body.userId.
- * 2. Operates ONLY on data parsed and validated by strict Zod schemas (req.validatedData).
- * 3. Explicitly constructs every database object property-by-property.
- * 4. NEVER executes Metadata.create(req.body).
+ * 1. Owner ALWAYS comes from req.user.id. Never from client input.
+ * 2. Every single image query pairs: { imageId, userId: req.user.id }. Never { imageId } alone.
+ * 3. Operates ONLY on data parsed and validated by strict Zod schemas (req.validatedData).
+ * 4. Explicitly constructs every database object property-by-property.
+ * 5. NEVER executes Metadata.create(req.body).
  */
 
 const Metadata = require('../models/metadata.model');
 
 /**
+ * GET /api/gallery/images/:imageId
+ * Phase 29: Read a single image metadata record.
+ * Query MUST pair: { imageId, userId: req.user.id }. Never { imageId } alone.
+ */
+const getImageMetadata = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { imageId } = req.params;
+
+        const record = await Metadata.findOne({ imageId, userId }).lean();
+
+        if (!record) {
+            return res.status(404).json({ message: `Image with ID ${imageId} not found for this user` });
+        }
+
+        return res.status(200).json({
+            image: {
+                userId: record.userId,
+                imageId: record.imageId,
+                fingerprint: record.fingerprint,
+                caption: record.caption,
+                captionEngine: record.captionEngine,
+                captionModel: record.captionModel,
+                captionVersion: record.captionVersion,
+                status: record.status,
+                keywords: record.keywords || [],
+                createdAt: record.createdAt,
+                updatedAt: record.updatedAt
+            }
+        });
+    } catch (err) {
+        console.error('[GalleryController] Error reading image metadata:', err);
+        return res.status(500).json({ message: "Internal server error reading image metadata" });
+    }
+};
+
+/**
+ * GET /api/gallery/images
+ * Phase 29: Read all images for the authenticated user.
+ * Query strictly scoped to: { userId: req.user.id }
+ */
+const getAllImagesMetadata = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+        const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+        const status = req.query.status || 'available';
+
+        const filter = { userId, status };
+        const [total, records] = await Promise.all([
+            Metadata.countDocuments(filter),
+            Metadata.find(filter)
+                .sort({ createdAt: -1 })
+                .skip((page - 1) * limit)
+                .limit(limit)
+                .lean()
+        ]);
+
+        return res.status(200).json({
+            total,
+            page,
+            limit,
+            images: records.map(r => ({
+                userId: r.userId,
+                imageId: r.imageId,
+                fingerprint: r.fingerprint,
+                caption: r.caption,
+                captionEngine: r.captionEngine,
+                captionModel: r.captionModel,
+                captionVersion: r.captionVersion,
+                status: r.status,
+                keywords: r.keywords || [],
+                createdAt: r.createdAt,
+                updatedAt: r.updatedAt
+            }))
+        });
+    } catch (err) {
+        console.error('[GalleryController] Error listing images metadata:', err);
+        return res.status(500).json({ message: "Internal server error listing images metadata" });
+    }
+};
+
+/**
  * POST /api/gallery/images
  * Creates or upserts a single image metadata record.
- * Owner strictly comes from req.user.id.
+ * Query MUST pair: { imageId, userId: req.user.id }. Never { imageId } alone.
  */
 const createImageMetadata = async (req, res) => {
     try {
@@ -35,7 +119,7 @@ const createImageMetadata = async (req, res) => {
         };
 
         const record = await Metadata.findOneAndUpdate(
-            { userId, imageId: explicitRecord.imageId },
+            { imageId: explicitRecord.imageId, userId },
             { $set: explicitRecord },
             { upsert: true, new: true, runValidators: true }
         );
@@ -63,8 +147,8 @@ const createImageMetadata = async (req, res) => {
 
 /**
  * PUT /api/gallery/images/:imageId
- * Updates an existing image metadata record.
- * Owner strictly comes from req.user.id.
+ * Phase 29: Updates an existing image metadata record.
+ * Query MUST pair: { imageId, userId: req.user.id }. Never { imageId } alone.
  */
 const updateImageMetadata = async (req, res) => {
     try {
@@ -79,7 +163,7 @@ const updateImageMetadata = async (req, res) => {
         if (updateData.status !== undefined) explicitUpdate.status = updateData.status;
 
         const record = await Metadata.findOneAndUpdate(
-            { userId, imageId },
+            { imageId, userId },
             { $set: explicitUpdate },
             { new: true }
         );
@@ -110,8 +194,8 @@ const updateImageMetadata = async (req, res) => {
 
 /**
  * DELETE /api/gallery/images/:imageId
- * Tombstones (soft-deletes) an image metadata record.
- * Owner strictly comes from req.user.id.
+ * Phase 29: Tombstones (soft-deletes) an image metadata record.
+ * Query MUST pair: { imageId, userId: req.user.id }. Never { imageId } alone.
  */
 const deleteImageMetadata = async (req, res) => {
     try {
@@ -119,7 +203,7 @@ const deleteImageMetadata = async (req, res) => {
         const { imageId } = req.params;
 
         const record = await Metadata.findOneAndUpdate(
-            { userId, imageId },
+            { imageId, userId },
             { $set: { status: 'deleted', updatedAt: new Date() } },
             { new: true }
         );
@@ -136,6 +220,32 @@ const deleteImageMetadata = async (req, res) => {
     } catch (err) {
         console.error('[GalleryController] Error deleting image metadata:', err);
         return res.status(500).json({ message: "Internal server error deleting image metadata" });
+    }
+};
+
+/**
+ * DELETE /api/gallery/images/:imageId/permanent
+ * Phase 29: Hard-deletes / purges an image metadata record permanently.
+ * Query MUST pair: { imageId, userId: req.user.id }. Never { imageId } alone.
+ */
+const purgeImageMetadata = async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { imageId } = req.params;
+
+        const record = await Metadata.findOneAndDelete({ imageId, userId });
+
+        if (!record) {
+            return res.status(404).json({ message: `Image with ID ${imageId} not found for this user` });
+        }
+
+        return res.status(200).json({
+            message: "Image metadata permanently deleted from cloud index",
+            imageId: record.imageId,
+            status: 'purged'
+        });
+    } catch (err) {
+        console.error('[GalleryController] Error purging image metadata:', err);
     }
 };
 
@@ -191,13 +301,14 @@ const reconcileMetadata = async (req, res) => {
 
 /**
  * POST /api/gallery/search
- * Semantic & keyword search across user's indexed photo captions.
- * Owner strictly comes from req.user.id.
+ * Phase 29: Semantic & keyword search across user's indexed photo captions.
+ * Query strictly pairs: { ...(imageId ? { imageId } : {}), userId: req.user.id }
+ * Never { imageId } alone.
  */
 const searchMetadata = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { query, limit } = req.validatedData;
+        const { query, limit, imageId } = req.validatedData;
 
         // Clean search query tokens
         const cleanQuery = query.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
@@ -210,14 +321,21 @@ const searchMetadata = async (req, res) => {
         // Build regex filters for full-caption and keyword matching
         const regexPatterns = tokens.map(t => new RegExp(t, 'i'));
 
-        const candidates = await Metadata.find({
+        const filter = {
             userId,
             status: 'available',
             $or: [
                 { caption: { $in: regexPatterns } },
                 { keywords: { $in: tokens } }
             ]
-        }).limit(limit * 2).lean();
+        };
+
+        // If scoped to a specific imageId, pair { imageId, userId }
+        if (imageId) {
+            filter.imageId = imageId;
+        }
+
+        const candidates = await Metadata.find(filter).limit(limit * 2).lean();
 
         // Rank candidates by token matches
         const scored = candidates.map(item => {
@@ -261,22 +379,30 @@ const searchMetadata = async (req, res) => {
 
 /**
  * POST /api/gallery/ask
- * AI Question-Answering over user's photo captions (RAG semantic query).
- * Owner strictly comes from req.user.id.
+ * Phase 29: AI Question-Answering over user's photo captions (RAG semantic query).
+ * Query strictly pairs: { ...(imageId ? { imageId } : {}), userId: req.user.id }
+ * Never { imageId } alone.
  */
 const askMetadata = async (req, res) => {
     try {
         const userId = req.user.id;
-        const { question } = req.validatedData;
+        const { question, imageId } = req.validatedData;
 
         // Extract key search terms from question
         const cleanQ = question.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').trim();
         const tokens = cleanQ.split(/\s+/).filter(t => t.length > 2);
 
-        const candidates = await Metadata.find({
+        const filter = {
             userId,
             status: 'available'
-        }).limit(300).lean();
+        };
+
+        // If asking about a specific image, pair { imageId, userId }
+        if (imageId) {
+            filter.imageId = imageId;
+        }
+
+        const candidates = await Metadata.find(filter).limit(300).lean();
 
         if (candidates.length === 0) {
             return res.status(200).json({
@@ -426,9 +552,12 @@ const getCloudStatus = async (req, res) => {
 };
 
 module.exports = {
+    getImageMetadata,
+    getAllImagesMetadata,
     createImageMetadata,
     updateImageMetadata,
     deleteImageMetadata,
+    purgeImageMetadata,
     reconcileMetadata,
     searchMetadata,
     askMetadata,

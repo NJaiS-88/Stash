@@ -131,24 +131,26 @@ const reconcileRequestSchema = z.object({
 });
 
 /**
- * Strict schema for Phase 27 semantic / keyword search request:
- * { query: string, limit?: number }
+ * Strict schema for Phase 27 / 29 semantic / keyword search request:
+ * { query: string, limit?: number, imageId?: string }
  */
 const searchRequestSchema = z.object({
     query: z.string().trim().min(1, { message: "Search query cannot be empty" }).max(200, { message: "Search query cannot exceed 200 characters" }),
-    limit: z.number().int().min(1).max(100).optional().default(30)
+    limit: z.number().int().min(1).max(100).optional().default(30),
+    imageId: z.string().min(1).max(128).optional().nullable()
 }).strict({
-    message: "Unexpected field in search request. Only 'query' and 'limit' are permitted."
+    message: "Unexpected field in search request. Only 'query', 'limit', and optional 'imageId' are permitted."
 });
 
 /**
- * Strict schema for Phase 27 AI Q&A ask request:
- * { question: string }
+ * Strict schema for Phase 27 / 29 AI Q&A RAG ask request:
+ * { question: string, imageId?: string }
  */
 const askRequestSchema = z.object({
-    question: z.string().trim().min(1, { message: "Question cannot be empty" }).max(500, { message: "Question cannot exceed 500 characters" })
+    question: z.string().trim().min(1, { message: "Question cannot be empty" }).max(500, { message: "Question cannot exceed 500 characters" }),
+    imageId: z.string().min(1).max(128).optional().nullable()
 }).strict({
-    message: "Unexpected field in ask request. Only 'question' is permitted."
+    message: "Unexpected field in ask request. Only 'question' and optional 'imageId' are permitted."
 });
 
 module.exports = {

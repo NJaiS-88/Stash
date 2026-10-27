@@ -13,9 +13,12 @@ const {
     askRequestSchema
 } = require('../validators/metadata.schema');
 const {
+    getImageMetadata,
+    getAllImagesMetadata,
     createImageMetadata,
     updateImageMetadata,
     deleteImageMetadata,
+    purgeImageMetadata,
     reconcileMetadata,
     searchMetadata,
     askMetadata,
@@ -27,7 +30,17 @@ const {
 // All gallery endpoints require verified JWT authentication (owner strictly req.user.id)
 router.use(verifyToken);
 
-// Single Image Metadata Endpoints (Phase 27)
+// Single & List Image Metadata Endpoints (Phase 29: Strictly paired with req.user.id)
+router.get(
+    '/images',
+    getAllImagesMetadata
+);
+
+router.get(
+    '/images/:imageId',
+    getImageMetadata
+);
+
 router.post(
     '/images',
     enforceCloudPrivacyBoundary,
@@ -45,6 +58,11 @@ router.put(
 router.delete(
     '/images/:imageId',
     deleteImageMetadata
+);
+
+router.delete(
+    '/images/:imageId/permanent',
+    purgeImageMetadata
 );
 
 // Semantic Operations & Synchronization Endpoints (Phase 27)
