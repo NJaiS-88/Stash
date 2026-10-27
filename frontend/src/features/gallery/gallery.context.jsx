@@ -4,10 +4,12 @@ import { getAllFolders, resetStaleProcessingImages, getPendingImages } from './s
 import { checkLocalAiHealth } from './services/localAiClient';
 import { cloudSyncManager } from './services/cloudSync';
 import { getPrivacyBoundaryAuditLog } from './services/privacyBoundary';
+import { useAuth } from '../auth/hooks/useAuth';
 
 const GalleryContext = createContext();
 
 export const GalleryProvider = ({ children }) => {
+    const { user } = useAuth();
     const [folders, setFolders] = useState([]);
     const [activeFolder, setActiveFolder] = useState(null);
     const [loading, setLoading] = useState(false);
@@ -21,9 +23,15 @@ export const GalleryProvider = ({ children }) => {
         });
     }, []);
 
-    // Autonomous background daemon: runs automatically every time website is loaded or refreshed
+    // Autonomous background daemon: runs ONLY when user is authenticated
     useEffect(() => {
         let mounted = true;
+
+        if (!user) {
+            setFolders([]);
+            visionQueue.pause();
+            return;
+        }
 
         const autoBootBackgroundAI = async () => {
             try {
@@ -57,7 +65,7 @@ export const GalleryProvider = ({ children }) => {
 
         // 4. Autonomous Watchdog: Periodically checks if Local AI was started while website is open
         const watchdogInterval = setInterval(async () => {
-            if (!mounted) return;
+            if (!mounted || !user) return;
             // Skip check if queue is already actively running
             if (visionQueue.isRunning && !visionQueue.isPaused) return;
 
@@ -80,7 +88,7 @@ export const GalleryProvider = ({ children }) => {
             mounted = false;
             clearInterval(watchdogInterval);
         };
-    }, []);
+    }, [user]);
 
     return (
         <GalleryContext.Provider value={{
@@ -94,9 +102,9 @@ export const GalleryProvider = ({ children }) => {
             setError,
             indexingState,
             pauseAI: () => visionQueue.pause(),
-            resumeAI: () => visionQueue.resume(folders),
-            triggerAI: (targetFolders = null) => visionQueue.start(targetFolders || folders),
-            syncCloud: () => cloudSyncManager.syncPendingImagesToCloud(),
+            resumeAI: () => user && visionQueue.resume(folders),
+            triggerAI: (targetFolders = null) => user && visionQueue.start(targetFolders || folders),
+            syncCloud: () => user && cloudSyncManager.syncPendingImagesToCloud(),
             getPrivacyAuditLog: () => getPrivacyBoundaryAuditLog()
         }}>
             {children}
@@ -105,4 +113,3 @@ export const GalleryProvider = ({ children }) => {
 };
 
 export default GalleryContext;
-

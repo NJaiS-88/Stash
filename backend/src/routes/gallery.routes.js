@@ -4,19 +4,74 @@ const verifyToken = require('../middlewares/auth.middleware');
 const enforceCloudPrivacyBoundary = require('../middlewares/privacyBoundary.middleware');
 const validateRequest = require('../middlewares/validateRequest.middleware');
 const {
+    singleImageRequestSchema,
+    updateImageRequestSchema,
     syncMetadataRequestSchema,
-    syncTombstonesRequestSchema
+    syncTombstonesRequestSchema,
+    reconcileRequestSchema,
+    searchRequestSchema,
+    askRequestSchema
 } = require('../validators/metadata.schema');
 const {
+    createImageMetadata,
+    updateImageMetadata,
+    deleteImageMetadata,
+    reconcileMetadata,
+    searchMetadata,
+    askMetadata,
     syncMetadata,
     syncTombstones,
     getCloudStatus
 } = require('../controllers/gallery.controller');
 
-// Multi-tier security: Authentication -> Privacy Boundary Inspector -> Strict Zod Validation -> Explicit DB Construction
+// All gallery endpoints require verified JWT authentication (owner strictly req.user.id)
+router.use(verifyToken);
+
+// Single Image Metadata Endpoints (Phase 27)
+router.post(
+    '/images',
+    enforceCloudPrivacyBoundary,
+    validateRequest(singleImageRequestSchema),
+    createImageMetadata
+);
+
+router.put(
+    '/images/:imageId',
+    enforceCloudPrivacyBoundary,
+    validateRequest(updateImageRequestSchema),
+    updateImageMetadata
+);
+
+router.delete(
+    '/images/:imageId',
+    deleteImageMetadata
+);
+
+// Semantic Operations & Synchronization Endpoints (Phase 27)
+router.post(
+    '/reconcile',
+    enforceCloudPrivacyBoundary,
+    validateRequest(reconcileRequestSchema),
+    reconcileMetadata
+);
+
+router.post(
+    '/search',
+    enforceCloudPrivacyBoundary,
+    validateRequest(searchRequestSchema),
+    searchMetadata
+);
+
+router.post(
+    '/ask',
+    enforceCloudPrivacyBoundary,
+    validateRequest(askRequestSchema),
+    askMetadata
+);
+
+// Bulk Operations
 router.post(
     '/sync',
-    verifyToken,
     enforceCloudPrivacyBoundary,
     validateRequest(syncMetadataRequestSchema),
     syncMetadata
@@ -24,7 +79,6 @@ router.post(
 
 router.post(
     '/tombstones',
-    verifyToken,
     enforceCloudPrivacyBoundary,
     validateRequest(syncTombstonesRequestSchema),
     syncTombstones
@@ -32,7 +86,6 @@ router.post(
 
 router.get(
     '/status',
-    verifyToken,
     getCloudStatus
 );
 

@@ -2,6 +2,7 @@ import { createBrowserRouter } from "react-router";
 import Login from "./features/auth/pages/Login";
 import Register from "./features/auth/pages/Register";
 import Home from "./features/auth/pages/Home";
+import About from "./features/auth/pages/About";
 import Protected from "./features/auth/components/Protected";
 import Dashboard from "./features/auth/pages/Dashboard";
 import Gallery from "./features/gallery/pages/Gallery";
@@ -12,12 +13,24 @@ export const router = createBrowserRouter([
         element: <Home />
     },
     {
+        path: "/about",
+        element: <About />
+    },
+    {
         path: "/gallery",
-        element: <Gallery />
+        element: (
+            <Protected>
+                <Gallery />
+            </Protected>
+        )
     },
     {
         path: "/dashboard",
-        element: <Dashboard />
+        element: (
+            <Protected>
+                <Dashboard />
+            </Protected>
+        )
     },
     {
         path: "/login",
@@ -28,4 +41,3 @@ export const router = createBrowserRouter([
         element: <Register />
     }
 ]);
-
