@@ -156,6 +156,29 @@ export async function getAllFolders(ownerId = getLocalOwnerId()) {
     }
 }
 
+export async function getFolderById(folderId, ownerId = getLocalOwnerId()) {
+    if (!folderId || !ownerId) return null;
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(FOLDERS_STORE, 'readonly');
+            const req = tx.objectStore(FOLDERS_STORE).get(folderId);
+            req.onsuccess = () => {
+                const folder = req.result;
+                if (!folder || (folder.localOwnerId && folder.localOwnerId !== ownerId)) {
+                    resolve(null);
+                } else {
+                    resolve(folder);
+                }
+            };
+            req.onerror = () => reject(req.error);
+        });
+    } catch (err) {
+        console.error('Error getting folder by ID:', folderId, err);
+        return null;
+    }
+}
+
 export async function deleteFolder(folderId) {
     try {
         const db = await getDB();
@@ -304,6 +327,30 @@ export async function getAllImages(ownerId = getLocalOwnerId()) {
     } catch (error) {
         console.error('Error getting all images:', error);
         return [];
+    }
+}
+
+export async function getImageById(imageId, ownerId = getLocalOwnerId()) {
+    if (!imageId || !ownerId) return null;
+    try {
+        const db = await getDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(IMAGES_STORE, 'readonly');
+            const store = tx.objectStore(IMAGES_STORE);
+            const req = store.get(imageId);
+            req.onsuccess = () => {
+                const record = req.result;
+                if (!record || (record.localOwnerId && record.localOwnerId !== ownerId)) {
+                    resolve(null);
+                } else {
+                    resolve(record);
+                }
+            };
+            req.onerror = () => reject(req.error);
+        });
+    } catch (err) {
+        console.error('Error getting image by ID:', imageId, err);
+        return null;
     }
 }
 

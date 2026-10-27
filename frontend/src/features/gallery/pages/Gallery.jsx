@@ -4,10 +4,12 @@ import Navbar from '../../auth/components/Navbar';
 import ConnectFolder from '../components/ConnectFolder';
 import GalleryGrid from '../components/GalleryGrid';
 import GallerySearch from '../components/GallerySearch';
+import SemanticSearchResults from '../components/SemanticSearchResults';
 import PrivateAiBanner from '../components/PrivateAiBanner';
 import AiIndexingBanner from '../components/AiIndexingBanner';
 import { useGallery } from '../hooks/useGallery';
 import { isMobileOrTabletDevice } from '../services/fileSystem';
+import { semanticSearch } from '../services/gallery.api';
 
 export default function Gallery() {
     const isMobile = isMobileOrTabletDevice();
@@ -26,7 +28,30 @@ export default function Gallery() {
     } = useGallery();
 
     const [searchQuery, setSearchQuery] = useState('');
+    const [semanticResults, setSemanticResults] = useState(null);
+    const [isSemanticSearching, setIsSemanticSearching] = useState(false);
+    const [semanticQuery, setSemanticQuery] = useState('');
     const navigate = useNavigate();
+
+    const handleSemanticSearch = async (queryText) => {
+        if (!queryText || !queryText.trim()) return;
+        setIsSemanticSearching(true);
+        setSemanticQuery(queryText.trim());
+        try {
+            const data = await semanticSearch(queryText.trim(), 30);
+            setSemanticResults(data.results || []);
+        } catch (err) {
+            console.error('Semantic search error:', err);
+            setSemanticResults([]);
+        } finally {
+            setIsSemanticSearching(false);
+        }
+    };
+
+    const handleClearSemanticSearch = () => {
+        setSemanticResults(null);
+        setSemanticQuery('');
+    };
 
     return (
         <div className="page-container">
@@ -164,14 +189,26 @@ export default function Gallery() {
                                     searchQuery={searchQuery}
                                     setSearchQuery={setSearchQuery}
                                     totalItems={activeFolder.imageRecords?.length || activeFolder.fileCount || 0}
+                                    onSemanticSearch={handleSemanticSearch}
+                                    isSemanticSearching={isSemanticSearching}
                                 />
-                                <GalleryGrid
-                                    entries={activeFolder.entries || []}
-                                    flatFiles={activeFolder.flatFiles || []}
-                                    imageRecords={activeFolder.imageRecords || []}
-                                    rootHandle={activeFolder.handle}
-                                    searchQuery={searchQuery}
-                                />
+
+                                {semanticResults !== null ? (
+                                    <SemanticSearchResults
+                                        results={semanticResults}
+                                        query={semanticQuery}
+                                        loading={isSemanticSearching}
+                                        onClear={handleClearSemanticSearch}
+                                    />
+                                ) : (
+                                    <GalleryGrid
+                                        entries={activeFolder.entries || []}
+                                        flatFiles={activeFolder.flatFiles || []}
+                                        imageRecords={activeFolder.imageRecords || []}
+                                        rootHandle={activeFolder.handle}
+                                        searchQuery={searchQuery}
+                                    />
+                                )}
                             </>
                         )}
                     </div>
